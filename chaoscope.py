@@ -1,12 +1,13 @@
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QObject, QThread, QTimer, pyqtSignal
+from PyQt5.QtCore import Qt, QPoint, QObject, QRect, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import QPushButton, QHBoxLayout, QApplication, QWidget, QLabel
 from gpiozero import Button
-from picamera2 import Picamera2
-from picamera2.previews.qt import QGlPicamera2
+from picamera2 import Picamera2  # type: ignore
+from picamera2.previews.qt import QGlPicamera2  # type: ignore
 
 TRANSLUCENT_STYLESHEET = (
     "color: white; background-color: rgba(255, 255, 255, 63); border: 1px solid white; "
@@ -14,6 +15,8 @@ TRANSLUCENT_STYLESHEET = (
 TRANSPARENT_STYLESHEET = (
     "color: white; background-color: rgba(255, 255, 255, 0); border: none; "
 )
+
+FONT = QFont("Deja Vu Sans Mono", 18)
 
 
 @dataclass
@@ -104,27 +107,44 @@ class PowerMonitor(QObject):
         return power
 
 
+class PowerLabelKind(StrEnum):
+    VOLTAGE = "voltage"
+    CURRENT = "current"
+    POWER = "power"
+
+
 class PowerLabel(QLabel):
-    power_state = PowerState
+    label_kind: PowerLabelKind
+    power_state: PowerState
 
     def __init__(
         self,
+        kind: PowerLabelKind,
         parent: QWidget | None = None,
         flags: Qt.WindowFlags | Qt.WindowType = Qt.WindowFlags(),
     ):
         super().__init__(parent=parent, flags=flags)
+        self.label_kind = kind
         self.power_state = PowerState(None, None, None)
         self.init_ui()
 
     def init_ui(self):
         self.setStyleSheet(TRANSPARENT_STYLESHEET)
+        self.setFont(FONT)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.update_ui()
 
     def update_ui(self):
-        v = self.power_state.voltage or 0.0
-        i = int(self.power_state.current or 0.0)
-        p = self.power_state.power or 0.0
-        self.setText(f"{v:.2f} V  {i:4} mA  {p:.2f} W")
+        match self.label_kind:
+            case PowerLabelKind.VOLTAGE:
+                v = self.power_state.voltage or 0.0
+                self.setText(f"{v:.2f} V")
+            case PowerLabelKind.CURRENT:
+                i = int(self.power_state.current or 0.0)
+                self.setText(f"{i:4} mA")
+            case PowerLabelKind.POWER:
+                p = self.power_state.power or 0.0
+                self.setText(f"{p:.2f} W")
 
     def on_power_reading(self, power_state: PowerState):
         self.power_state = power_state
@@ -179,15 +199,13 @@ qpicamera2.setWindowFlag(Qt.FramelessWindowHint)
 qpicamera2.setGeometry(0, 0, 640, 480)
 qpicamera2.setWindowTitle("Chaoscope camera")
 
-font = QFont("Deja Vu Sans Mono", 18)
-
 button_window = QWidget()
 button_window.setAttribute(Qt.WA_TranslucentBackground)
 button_window.setWindowFlag(Qt.FramelessWindowHint)
 button_window.setGeometry(0, 0, 640, 480)
 button_window.setWindowTitle("Chaoscope controls")
 button_window.setCursor(Qt.BlankCursor)
-button_window.setFont(font)
+button_window.setFont(FONT)
 
 close_button = QPushButton(button_window)
 close_button.setStyleSheet(TRANSLUCENT_STYLESHEET)
@@ -200,10 +218,17 @@ button_A.setGeometry(5, 5, button_A.width(), button_A.height())
 button_B = ButtonLabel(24, "B", button_window)
 button_B.setGeometry(5, 5 + button_A.height(), button_B.width(), button_B.height())
 
-power_label = PowerLabel(button_window)
-power_label.setGeometry(
-    5, 480 - 5 - power_label.height(), 480 - 5 - 5, power_label.height()
-)
+power_monitor = QWidget(button_window)
+power_monitor.setGeometry(5, 480 - 5 - 40, 640 - 5 - 5, 40)
+
+voltage_label = PowerLabel(PowerLabelKind.VOLTAGE)
+current_label = PowerLabel(PowerLabelKind.CURRENT)
+power_label = PowerLabel(PowerLabelKind.POWER)
+
+power_monitor_layout = QHBoxLayout(power_monitor)
+power_monitor_layout.addWidget(voltage_label)
+power_monitor_layout.addWidget(current_label)
+power_monitor_layout.addWidget(power_label)
 
 if __name__ == "__main__":
     picam2.start()
@@ -216,15 +241,18 @@ if __name__ == "__main__":
     thread = QThread()
     worker = PowerMonitor()
     worker.moveToThread(thread)
-    worker.output.connect(power_label.on_power_reading)
     thread.started.connect(worker.start)
+    close_button.clicked.connect(worker.stop)
+
+    worker.output.connect(voltage_label.on_power_reading)
+    worker.output.connect(current_label.on_power_reading)
+    worker.output.connect(power_label.on_power_reading)
 
     def finish_thread():
         thread.quit()
         thread.wait()
 
     worker.finished.connect(finish_thread)
-    close_button.clicked.connect(worker.stop)
 
     def stop_and_exit():
         qpicamera2.close()
