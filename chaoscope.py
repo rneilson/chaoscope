@@ -1,10 +1,8 @@
 from PyQt5.QtCore import Qt, QTimer
-# from PyQt5.QtGui import QRawFont
-from PyQt5.QtWidgets import QPushButton, QVBoxLayout, QApplication, QWidget
+from PyQt5.QtGui import QFont, QPalette
+from PyQt5.QtWidgets import QPushButton, QHBoxLayout, QApplication, QWidget, QLabel
 from picamera2 import Picamera2
 from picamera2.previews.qt import QGlPicamera2
-
-FONT_PATH = '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf'
 
 picam2 = Picamera2()
 picam2.configure(picam2.create_preview_configuration({'size': (640, 480)}))
@@ -16,7 +14,7 @@ qpicamera2.setWindowFlag(Qt.FramelessWindowHint)
 qpicamera2.setGeometry(0, 0, 640, 480)
 qpicamera2.setWindowTitle('Chaoscope camera')
 
-# font = QRawFont(FONT_PATH, 18)
+font = QFont('Deja Vu Sans Mono', 18)
 
 button_window = QWidget()
 button_window.setAttribute(Qt.WA_TranslucentBackground)
@@ -24,14 +22,33 @@ button_window.setWindowFlag(Qt.FramelessWindowHint)
 button_window.setGeometry(0, 0, 640, 480)
 button_window.setWindowTitle('Chaoscope controls')
 button_window.setCursor(Qt.BlankCursor)
+button_window.setFont(font)
+
+TRANSLUCENT_STYLESHEET = (
+    'color: white; '
+    'background-color: rgba(255, 255, 255, 63); '
+    'border: none; '
+)
 
 close_button = QPushButton(button_window)
+close_button.setStyleSheet(TRANSLUCENT_STYLESHEET)
 close_button.setText('X')
-# close_button.setFont(font)
-# close_button.setWindowOpacity(0.5)
-close_button.setStyleSheet('background-color: rgba(255, 255, 255, 63); border: none;')
 close_button.setGeometry((640 - 40 - 5), 5, 40, 40)
-close_button.setCursor(Qt.BlankCursor)
+
+button_label_A = QLabel(button_window)
+button_label_A.setStyleSheet(TRANSLUCENT_STYLESHEET)
+button_label_A.setText('A: [ ]')
+button_label_A.setGeometry(
+    5, 5, button_label_A.width(), button_label_A.height()
+)
+
+button_label_B = QLabel(button_window)
+button_label_B.setStyleSheet(TRANSLUCENT_STYLESHEET)
+button_label_B.setText('B: [ ]')
+button_label_B.setGeometry(
+    5, 5 + button_label_A.height(), button_label_B.width(), button_label_B.height()
+)
+
 
 def stop_and_exit():
     qpicamera2.close()
