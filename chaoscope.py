@@ -1,6 +1,7 @@
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import QPushButton, QHBoxLayout, QApplication, QWidget, QLabel
+from gpiozero import Button
 from picamera2 import Picamera2
 from picamera2.previews.qt import QGlPicamera2
 
@@ -13,12 +14,15 @@ TRANSPARENT_STYLESHEET = (
 
 
 class ButtonLabel(QLabel):
+    button: Button
     button_name: str
     button_active: bool
-    # TODO: signals
+    button_pressed = pyqtSignal()
+    button_released = pyqtSignal()
 
     def __init__(
         self,
+        pin: int,
         name: str,
         parent: QWidget | None = None,
         flags: Qt.WindowFlags | Qt.WindowType = Qt.WindowFlags(),
@@ -26,6 +30,10 @@ class ButtonLabel(QLabel):
         super().__init__(parent=parent, flags=flags)
         self.button_name = name
         self.button_active = False
+        self.button = Button(pin, bounce_time=0.01)
+        self.button.when_activated = self.on_button_pressed
+        self.button.when_deactivated = self.on_button_released
+
         self.init_ui()
 
     def init_ui(self):
@@ -34,6 +42,14 @@ class ButtonLabel(QLabel):
 
     def update_ui(self):
         self.setText(f"{self.button_name}: [{'X' if self.button_active else ' '}]")
+
+    def on_button_pressed(self):
+        self.button_active = True
+        self.update_ui()
+
+    def on_button_released(self):
+        self.button_active = False
+        self.update_ui()
 
 
 picam2 = Picamera2()
@@ -61,10 +77,10 @@ close_button.setStyleSheet(TRANSLUCENT_STYLESHEET)
 close_button.setText("X")
 close_button.setGeometry((640 - 40 - 5), 5, 40, 40)
 
-button_A = ButtonLabel("A", button_window)
+button_A = ButtonLabel(23, "A", button_window)
 button_A.setGeometry(5, 5, button_A.width(), button_A.height())
 
-button_B = ButtonLabel("B", button_window)
+button_B = ButtonLabel(24, "B", button_window)
 button_B.setGeometry(5, 5 + button_A.height(), button_B.width(), button_B.height())
 
 
