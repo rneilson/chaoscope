@@ -4,6 +4,38 @@ from PyQt5.QtWidgets import QPushButton, QHBoxLayout, QApplication, QWidget, QLa
 from picamera2 import Picamera2
 from picamera2.previews.qt import QGlPicamera2
 
+TRANSLUCENT_STYLESHEET = (
+    "color: white; background-color: rgba(255, 255, 255, 63); border: 1px solid white; "
+)
+TRANSPARENT_STYLESHEET = (
+    "color: white; background-color: rgba(255, 255, 255, 0); border: none; "
+)
+
+
+class ButtonLabel(QLabel):
+    button_name: str
+    button_active: bool
+    # TODO: signals
+
+    def __init__(
+        self,
+        name: str,
+        parent: QWidget | None = None,
+        flags: Qt.WindowFlags | Qt.WindowType = Qt.WindowFlags(),
+    ):
+        super().__init__(parent=parent, flags=flags)
+        self.button_name = name
+        self.button_active = False
+        self.init_ui()
+
+    def init_ui(self):
+        self.setStyleSheet(TRANSPARENT_STYLESHEET)
+        self.update_ui()
+
+    def update_ui(self):
+        self.setText(f"{self.button_name}: [{'X' if self.button_active else ' '}]")
+
+
 picam2 = Picamera2()
 picam2.configure(picam2.create_preview_configuration({"size": (640, 480)}))
 
@@ -24,29 +56,16 @@ button_window.setWindowTitle("Chaoscope controls")
 button_window.setCursor(Qt.BlankCursor)
 button_window.setFont(font)
 
-TRANSLUCENT_STYLESHEET = (
-    "color: white; background-color: rgba(255, 255, 255, 63); border: 1px solid white; "
-)
-TRANSPARENT_STYLESHEET = (
-    "color: white; background-color: rgba(255, 255, 255, 0); border: none; "
-)
-
 close_button = QPushButton(button_window)
 close_button.setStyleSheet(TRANSLUCENT_STYLESHEET)
 close_button.setText("X")
 close_button.setGeometry((640 - 40 - 5), 5, 40, 40)
 
-button_label_A = QLabel(button_window)
-button_label_A.setStyleSheet(TRANSPARENT_STYLESHEET)
-button_label_A.setText("A: [ ]")
-button_label_A.setGeometry(5, 5, button_label_A.width(), button_label_A.height())
+button_A = ButtonLabel("A", button_window)
+button_A.setGeometry(5, 5, button_A.width(), button_A.height())
 
-button_label_B = QLabel(button_window)
-button_label_B.setStyleSheet(TRANSPARENT_STYLESHEET)
-button_label_B.setText("B: [ ]")
-button_label_B.setGeometry(
-    5, 5 + button_label_A.height(), button_label_B.width(), button_label_B.height()
-)
+button_B = ButtonLabel("B", button_window)
+button_B.setGeometry(5, 5 + button_A.height(), button_B.width(), button_B.height())
 
 
 def stop_and_exit():
