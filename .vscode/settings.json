@@ -1,3 +1,3 @@
 {
-    "basedpyright.analysis.typeCheckingMode": "basic"
+    "basedpyright.analysis.typeCheckingMode": "off"
 }
