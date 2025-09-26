@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QPoint, QObject, QRect, QThread, QTimer, pyqtSignal
+from PyQt5.QtCore import Qt, QObject, QThread, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import QPushButton, QHBoxLayout, QApplication, QWidget, QLabel
 from gpiozero import Button
@@ -189,48 +189,49 @@ class ButtonLabel(QLabel):
         self.update_ui()
 
 
-picam2 = Picamera2()
-picam2.configure(picam2.create_preview_configuration({"size": (640, 480)}))
+def main():
+    picam2 = Picamera2()
+    picam2.configure(picam2.create_preview_configuration({"size": (640, 480)}))
 
-app = QApplication([])
+    app = QApplication([])
 
-qpicamera2 = QGlPicamera2(picam2, width=640, height=480, keep_ar=False)
-qpicamera2.setWindowFlag(Qt.FramelessWindowHint)
-qpicamera2.setGeometry(0, 0, 640, 480)
-qpicamera2.setWindowTitle("Chaoscope camera")
+    qpicamera2 = QGlPicamera2(picam2, width=640, height=480, keep_ar=False)
+    qpicamera2.setWindowFlag(Qt.WindowType.FramelessWindowHint)
+    qpicamera2.setGeometry(0, 0, 640, 480)
+    qpicamera2.setWindowTitle("Chaoscope camera")
 
-button_window = QWidget()
-button_window.setAttribute(Qt.WA_TranslucentBackground)
-button_window.setWindowFlag(Qt.FramelessWindowHint)
-button_window.setGeometry(0, 0, 640, 480)
-button_window.setWindowTitle("Chaoscope controls")
-button_window.setCursor(Qt.BlankCursor)
-button_window.setFont(FONT)
+    button_window = QWidget()
+    button_window.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    button_window.setWindowFlag(Qt.WindowType.FramelessWindowHint)
+    button_window.setGeometry(0, 0, 640, 480)
+    button_window.setWindowTitle("Chaoscope controls")
+    button_window.setCursor(Qt.CursorShape.BlankCursor)
+    button_window.setFont(FONT)
 
-close_button = QPushButton(button_window)
-close_button.setStyleSheet(TRANSLUCENT_STYLESHEET)
-close_button.setText("X")
-close_button.setGeometry((640 - 60 - 5), 5, 60, 60)
+    close_button = QPushButton(button_window)
+    close_button.setStyleSheet(TRANSLUCENT_STYLESHEET)
+    close_button.setText("X")
+    close_button.setGeometry((640 - 60 - 5), 5, 60, 60)
 
-button_A = ButtonLabel(23, "A", button_window)
-button_A.setGeometry(5, 5, button_A.width(), button_A.height())
+    button_A = ButtonLabel(23, "A", button_window)
+    button_A.setGeometry(5, 5, button_A.width(), button_A.height())
 
-button_B = ButtonLabel(24, "B", button_window)
-button_B.setGeometry(5, 5 + button_A.height(), button_B.width(), button_B.height())
+    button_B = ButtonLabel(24, "B", button_window)
+    button_B.setGeometry(5, 5 + button_A.height(), button_B.width(), button_B.height())
 
-power_monitor = QWidget(button_window)
-power_monitor.setGeometry(5, 480 - 5 - 40, 640 - 5 - 5, 40)
+    power_monitor = QWidget(button_window)
+    power_monitor.setGeometry(5, 480 - 5 - 40, 640 - 5 - 5, 40)
 
-voltage_label = PowerLabel(PowerLabelKind.VOLTAGE)
-current_label = PowerLabel(PowerLabelKind.CURRENT)
-power_label = PowerLabel(PowerLabelKind.POWER)
+    voltage_label = PowerLabel(PowerLabelKind.VOLTAGE)
+    current_label = PowerLabel(PowerLabelKind.CURRENT)
+    power_label = PowerLabel(PowerLabelKind.POWER)
 
-power_monitor_layout = QHBoxLayout(power_monitor)
-power_monitor_layout.addWidget(voltage_label)
-power_monitor_layout.addWidget(current_label)
-power_monitor_layout.addWidget(power_label)
+    power_monitor_layout = QHBoxLayout(power_monitor)
+    power_monitor_layout.addWidget(voltage_label)
+    power_monitor_layout.addWidget(current_label)
+    power_monitor_layout.addWidget(power_label)
 
-if __name__ == "__main__":
+    ## Starting properly now
     picam2.start()
     qpicamera2.show()
 
@@ -268,3 +269,6 @@ if __name__ == "__main__":
 
     picam2.stop()
     # Any other cleanup?
+
+if __name__ == "__main__":
+    main()
