@@ -2,8 +2,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QObject, QThread, QTimer, pyqtSignal
-from PyQt5.QtGui import QFont
+from PyQt5.QtCore import Qt, QPoint, QObject, QRect, QThread, QTimer, pyqtSignal
+from PyQt5.QtGui import QFont, QPainter, QPaintEvent, QPen
 from PyQt5.QtWidgets import QPushButton, QHBoxLayout, QApplication, QWidget, QLabel
 from gpiozero import Button
 from picamera2 import Picamera2  # type: ignore
@@ -183,10 +183,89 @@ class ButtonLabel(QLabel):
     def on_button_pressed(self):
         self.button_active = True
         self.update_ui()
+        self.button_pressed.emit()
 
     def on_button_released(self):
         self.button_active = False
         self.update_ui()
+        self.button_released.emit()
+
+
+class Reticle(QWidget):
+
+    # TODO: determine from font somehow
+    LABEL_HEIGHT = 40
+    LABEL_MIN_WIDTH = 100
+    RETICLE_LINE_WIDTH = 3
+
+    def __init__(
+        self,
+        center_x: int,
+        center_y: int,
+        radius: int,
+        parent: QWidget | None = None,
+        flags: Qt.WindowFlags | Qt.WindowType = Qt.WindowFlags(),
+    ) -> None:
+        super().__init__(parent, flags)
+        self.center_x = center_x
+        self.center_y = center_y
+        self.radius = radius
+        self.text_width = max(
+            (radius + self.RETICLE_LINE_WIDTH) * 2, self.LABEL_MIN_WIDTH
+        )
+        self.text = ""
+        self.init_ui()
+
+    def init_ui(self):
+        self.setStyleSheet(TRANSPARENT_STYLESHEET)
+
+        self.setGeometry(
+            self.center_x - (self.text_width // 2),
+            self.center_y - self.radius - self.RETICLE_LINE_WIDTH,
+            self.text_width,
+            ((self.radius + self.RETICLE_LINE_WIDTH) * 2) + self.LABEL_HEIGHT,
+        )
+
+    def on_range_triggered(self):
+        # TODO: receive range value and update text accordingly
+        self.text = "0.00m"
+        self.update()
+
+    def on_range_released(self):
+        self.text = ""
+        self.update()
+
+    def paintEvent(self, event: QPaintEvent):
+        qp = QPainter()
+        qp.begin(self)
+        qp.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        rect = event.rect()
+        width = rect.width()
+        top_left = rect.topLeft()
+        center_x = top_left.x() + (width // 2)
+        center_y = top_left.y() + self.radius + self.RETICLE_LINE_WIDTH
+        label_x = top_left.x()
+        label_y = top_left.y() + ((self.radius + self.RETICLE_LINE_WIDTH) * 2)
+        label_w = width
+        label_h = rect.height() - ((self.radius + self.RETICLE_LINE_WIDTH) * 2)
+
+        qp.setPen(
+            QPen(Qt.GlobalColor.white, self.RETICLE_LINE_WIDTH, Qt.PenStyle.SolidLine)
+        )
+        qp.drawEllipse(QPoint(center_x, center_y), self.radius, self.radius)
+        # TODO: draw center point when ranging active
+
+        if self.text:
+            qp.setPen(QPen(Qt.GlobalColor.white))
+            qp.setFont(FONT)
+            qp.drawText(
+                QRect(label_x, label_y, label_w, label_h),
+                Qt.AlignmentFlag.AlignCenter,
+                self.text,
+            )
+
+        qp.end()
 
 
 def main():
@@ -218,6 +297,10 @@ def main():
 
     button_B = ButtonLabel(24, "B", button_window)
     button_B.setGeometry(5, 5 + button_A.height(), button_B.width(), button_B.height())
+
+    reticle = Reticle(320, 240, 20, button_window)
+    button_A.button_pressed.connect(reticle.on_range_triggered)
+    button_A.button_released.connect(reticle.on_range_released)
 
     power_monitor = QWidget(button_window)
     power_monitor.setGeometry(5, 480 - 5 - 40, 640 - 5 - 5, 40)
@@ -269,6 +352,7 @@ def main():
 
     picam2.stop()
     # Any other cleanup?
+
 
 if __name__ == "__main__":
     main()
