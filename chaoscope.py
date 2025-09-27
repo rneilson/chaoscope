@@ -26,7 +26,7 @@ class PowerState:
     power: float | None
 
 
-class PowerMonitor(QObject):
+class PowerReader(QObject):
     INTERVAL_MS = 1000
 
     _hwmon_dir: Path | None
@@ -149,6 +149,30 @@ class PowerLabel(QLabel):
     def on_power_reading(self, power_state: PowerState):
         self.power_state = power_state
         self.update_ui()
+
+
+class PowerMonitor(QWidget):
+    power_reading = pyqtSignal(PowerState)
+
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        flags: Qt.WindowFlags | Qt.WindowType = Qt.WindowFlags(),
+    ) -> None:
+        super().__init__(parent, flags)
+
+        self.voltage_label = PowerLabel(PowerLabelKind.VOLTAGE)
+        self.current_label = PowerLabel(PowerLabelKind.CURRENT)
+        self.power_label = PowerLabel(PowerLabelKind.POWER)
+
+        self.power_monitor_layout = QHBoxLayout(self)
+        self.power_monitor_layout.addWidget(self.voltage_label)
+        self.power_monitor_layout.addWidget(self.current_label)
+        self.power_monitor_layout.addWidget(self.power_label)
+
+        self.power_reading.connect(self.voltage_label.on_power_reading)
+        self.power_reading.connect(self.current_label.on_power_reading)
+        self.power_reading.connect(self.power_label.on_power_reading)
 
 
 class ButtonLabel(QLabel):
@@ -302,17 +326,8 @@ def main():
     button_A.button_pressed.connect(reticle.on_range_triggered)
     button_A.button_released.connect(reticle.on_range_released)
 
-    power_monitor = QWidget(button_window)
+    power_monitor = PowerMonitor(button_window)
     power_monitor.setGeometry(5, 480 - 5 - 40, 640 - 5 - 5, 40)
-
-    voltage_label = PowerLabel(PowerLabelKind.VOLTAGE)
-    current_label = PowerLabel(PowerLabelKind.CURRENT)
-    power_label = PowerLabel(PowerLabelKind.POWER)
-
-    power_monitor_layout = QHBoxLayout(power_monitor)
-    power_monitor_layout.addWidget(voltage_label)
-    power_monitor_layout.addWidget(current_label)
-    power_monitor_layout.addWidget(power_label)
 
     ## Starting properly now
     picam2.start()
@@ -322,27 +337,23 @@ def main():
     button_window.raise_()
     button_window.activateWindow()
 
-    thread = QThread()
-    worker = PowerMonitor()
-    worker.moveToThread(thread)
-    thread.started.connect(worker.start)
-    close_button.clicked.connect(worker.stop)
+    power_reader = PowerReader()
+    power_reader.output.connect(power_monitor.power_reading)
 
-    worker.output.connect(voltage_label.on_power_reading)
-    worker.output.connect(current_label.on_power_reading)
-    worker.output.connect(power_label.on_power_reading)
+    thread = QThread()
+    power_reader.moveToThread(thread)
+    thread.started.connect(power_reader.start)
+    close_button.clicked.connect(power_reader.stop)
 
     def finish_thread():
         thread.quit()
         thread.wait()
 
-    worker.finished.connect(finish_thread)
+    power_reader.finished.connect(finish_thread)
 
     def stop_and_exit():
         qpicamera2.close()
         button_window.close()
-        thread.quit()
-        thread.wait()
         app.quit()
 
     close_button.clicked.connect(stop_and_exit)
