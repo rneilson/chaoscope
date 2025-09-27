@@ -234,9 +234,8 @@ class Reticle(QWidget):
         self.center_x = center_x
         self.center_y = center_y
         self.radius = radius
-        self.text_width = max(
-            (radius + self.RETICLE_LINE_WIDTH) * 2, self.LABEL_MIN_WIDTH
-        )
+        self.outer_radius = radius + self.RETICLE_LINE_WIDTH
+        self.text_width = max(self.outer_radius * 2, self.LABEL_MIN_WIDTH)
         self.text = ""
         self.init_ui()
 
@@ -245,9 +244,9 @@ class Reticle(QWidget):
 
         self.setGeometry(
             self.center_x - (self.text_width // 2),
-            self.center_y - self.radius - self.RETICLE_LINE_WIDTH,
+            self.center_y - self.outer_radius,
             self.text_width,
-            ((self.radius + self.RETICLE_LINE_WIDTH) * 2) + self.LABEL_HEIGHT,
+            (self.outer_radius * 2) + self.LABEL_HEIGHT,
         )
 
     def on_range_triggered(self):
@@ -268,11 +267,11 @@ class Reticle(QWidget):
         width = rect.width()
         top_left = rect.topLeft()
         center_x = top_left.x() + (width // 2)
-        center_y = top_left.y() + self.radius + self.RETICLE_LINE_WIDTH
+        center_y = top_left.y() + self.outer_radius
         label_x = top_left.x()
-        label_y = top_left.y() + ((self.radius + self.RETICLE_LINE_WIDTH) * 2)
+        label_y = top_left.y() + (self.outer_radius * 2)
         label_w = width
-        label_h = rect.height() - ((self.radius + self.RETICLE_LINE_WIDTH) * 2)
+        label_h = rect.height() - (self.outer_radius * 2)
 
         qp.setPen(
             QPen(Qt.GlobalColor.white, self.RETICLE_LINE_WIDTH, Qt.PenStyle.SolidLine)
