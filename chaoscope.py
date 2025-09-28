@@ -1,3 +1,4 @@
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -27,6 +28,35 @@ TRANSPARENT_STYLESHEET = (
 )
 
 FONT = QFont("Deja Vu Sans Mono", 18)
+FONT_LG = QFont("Deja Vu Sans Mono", 24)
+
+
+class OverlayWindow(QWidget):
+    exit_code: int
+    finish = pyqtSignal()
+
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        flags: Qt.WindowFlags | Qt.WindowType = Qt.WindowFlags(),
+    ) -> None:
+        super().__init__(parent, flags)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint)
+        self.setWindowTitle("Chaoscope controls")
+        self.setCursor(Qt.CursorShape.BlankCursor)
+        self.setFont(FONT)
+        self.exit_code = 0
+
+    def on_close(self):
+        # Set successful exit code
+        self.exit_code = 0
+        self.finish.emit()
+
+    def on_restart(self):
+        # Set special exit code to indicate restart after exit
+        self.exit_code = 2
+        self.finish.emit()
 
 
 @dataclass
@@ -370,7 +400,7 @@ def thread_finisher(thread):
     return finish_thread
 
 
-def main():
+def main() -> int:
     picam2 = Picamera2()
     preview_config = picam2.create_preview_configuration(
         main={"size": (640, 480)},
@@ -385,28 +415,32 @@ def main():
     qpicamera2.setGeometry(0, 0, 640, 480)
     qpicamera2.setWindowTitle("Chaoscope camera")
 
-    button_window = QWidget()
-    button_window.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-    button_window.setWindowFlag(Qt.WindowType.FramelessWindowHint)
-    button_window.setGeometry(0, 0, 640, 480)
-    button_window.setWindowTitle("Chaoscope controls")
-    button_window.setCursor(Qt.CursorShape.BlankCursor)
-    button_window.setFont(FONT)
+    overlay_window = OverlayWindow()
+    overlay_window.setGeometry(0, 0, 640, 480)
 
-    close_button = QPushButton(button_window)
+    close_button = QPushButton(overlay_window)
     close_button.setStyleSheet(TRANSLUCENT_STYLESHEET)
+    close_button.setFont(FONT_LG)
     close_button.setText("X")
     close_button.setGeometry((640 - 60 - 5), 5, 60, 60)
+    close_button.clicked.connect(overlay_window.on_close)
 
-    button_A = ButtonLabel(23, "A", button_window)
+    restart_button = QPushButton(overlay_window)
+    restart_button.setStyleSheet(TRANSLUCENT_STYLESHEET)
+    restart_button.setFont(FONT_LG)
+    restart_button.setText("⟳")
+    restart_button.setGeometry((640 - 60 - 60 - 5 - 5), 5, 60, 60)
+    restart_button.clicked.connect(overlay_window.on_restart)
+
+    button_A = ButtonLabel(23, "A", overlay_window)
     button_A.setGeometry(5, 5, button_A.width(), button_A.height())
 
-    button_B = ButtonLabel(24, "B", button_window)
+    button_B = ButtonLabel(24, "B", overlay_window)
     button_B.setGeometry(5, 5 + button_A.height(), button_B.width(), button_B.height())
 
-    reticle = Reticle(320, 240, 20, button_window)
+    reticle = Reticle(320, 240, 20, overlay_window)
 
-    power_monitor = PowerMonitor(button_window)
+    power_monitor = PowerMonitor(overlay_window)
     power_monitor.setGeometry(5, 480 - 5 - 40, 640 - 5 - 5, 40)
 
     ## Starting properly now
@@ -414,16 +448,16 @@ def main():
     picam2.start()
     qpicamera2.show()
 
-    button_window.show()
-    button_window.raise_()
-    button_window.activateWindow()
+    overlay_window.show()
+    overlay_window.raise_()
+    overlay_window.activateWindow()
 
     power_reader = PowerReader()
     power_reader.output.connect(power_monitor.power_reading)
     power_thread = QThread()
     power_reader.moveToThread(power_thread)
     power_thread.started.connect(power_reader.start)
-    close_button.clicked.connect(power_reader.stop)
+    overlay_window.finish.connect(power_reader.stop)
     power_reader.finished.connect(thread_finisher(power_thread))
 
     range_reader = RangeReader()
@@ -433,15 +467,15 @@ def main():
     range_thread = QThread()
     range_reader.moveToThread(range_thread)
     range_thread.started.connect(range_reader.start)
-    close_button.clicked.connect(range_reader.stop)
+    overlay_window.finish.connect(range_reader.stop)
     range_reader.finished.connect(thread_finisher(range_thread))
 
     def stop_and_exit():
         qpicamera2.close()
-        button_window.close()
+        overlay_window.close()
         app.quit()
 
-    close_button.clicked.connect(stop_and_exit)
+    overlay_window.finish.connect(stop_and_exit)
 
     power_thread.start()
     range_thread.start()
@@ -450,6 +484,8 @@ def main():
     picam2.stop()
     # Any other cleanup?
 
+    return overlay_window.exit_code
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
