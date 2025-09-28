@@ -372,7 +372,11 @@ def thread_finisher(thread):
 
 def main():
     picam2 = Picamera2()
-    picam2.configure(picam2.create_preview_configuration({"size": (640, 480)}))
+    preview_config = picam2.create_preview_configuration(
+        main={"size": (640, 480)},
+        controls={"FrameDurationLimits": (33333, 33333)},
+    )
+    picam2.configure(preview_config)
 
     app = QApplication([])
 
