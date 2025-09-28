@@ -1,8 +1,18 @@
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QPoint, QObject, QRect, QThread, QTimer, pyqtSignal
+from PyQt5.QtCore import (
+    Qt,
+    QPoint,
+    QObject,
+    QRect,
+    QThread,
+    QTimer,
+    pyqtSignal,
+    pyqtSlot,
+)
 from PyQt5.QtGui import QFont, QPainter, QPaintEvent, QPen
 from PyQt5.QtWidgets import QPushButton, QHBoxLayout, QApplication, QWidget, QLabel
 from gpiozero import Button
@@ -146,6 +156,7 @@ class PowerLabel(QLabel):
                 p = self.power_state.power or 0.0
                 self.setText(f"{p:.2f} W")
 
+    @pyqtSlot(PowerState)
     def on_power_reading(self, power_state: PowerState):
         self.power_state = power_state
         self.update_ui()
@@ -215,6 +226,63 @@ class ButtonLabel(QLabel):
         self.button_released.emit()
 
 
+class RangeReader(QObject):
+    is_reading: bool
+    reading = pyqtSignal(float)
+    finished = pyqtSignal()
+    # TEMP
+    _timer: QTimer | None
+
+    def __init__(self, parent: QObject | None = None):
+        super().__init__(parent=parent)
+        # TODO: create GPIO input for data-ready pin
+        # TODO: open I2C bus
+        # TODO: set lidar disabled
+        # TODO: set lidar frequency to 50Hz
+        self.is_reading = False
+        # TEMP
+        self._timer = None
+
+    def start(self):
+        # TODO: connect GPIO input to on_data_ready slot
+        # TEMP: timer to simulate regular readings
+        # Might keep it around to clear readings after some amount of time
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self.on_data_ready)
+        self._timer.start(20)
+
+    def stop(self):
+        self.on_stop_reading()
+        # TEMP
+        self._timer.stop()
+        self._timer = None
+        self.finished.emit()
+
+    def on_start_reading(self):
+        # TODO: set lidar enabled
+        self.is_reading = True
+
+    def on_stop_reading(self):
+        # TODO: set lidar disabled
+        self.is_reading = False
+        # Emit special value to indicate no reading
+        self.reading.emit(0.0)
+
+    def on_data_ready(self):
+        # For now, early return if not reading - we may have to revisit this if
+        # we need to read from the lidar and discard instead
+        if not self.is_reading:
+            # Emit special value to indicate no reading
+            self.reading.emit(0.0)
+            return
+        # TODO: read distance and amplitude from lidar
+        # TODO: return special value if too close/far/weak/strong
+        # TEMP: make up a random value here
+        now = datetime.now()
+        fake_range = float(now.second) + (now.microsecond / 1_000_000.0)
+        self.reading.emit(fake_range)
+
+
 class Reticle(QWidget):
 
     # TODO: determine from font somehow
@@ -249,13 +317,15 @@ class Reticle(QWidget):
             (self.outer_radius * 2) + self.LABEL_HEIGHT,
         )
 
-    def on_range_triggered(self):
-        # TODO: receive range value and update text accordingly
-        self.text = "0.00m"
-        self.update()
-
-    def on_range_released(self):
-        self.text = ""
+    def on_range_reading(self, range: float):
+        if range == 0.0:
+            # Zero value indicates no reading, clear text
+            self.text = ""
+        elif range < 0.0:
+            # Negative value indicates invalid reading (too close/far/weak/strong)
+            self.text = "N/A"
+        else:
+            self.text = f"{range:.2f}m"
         self.update()
 
     def paintEvent(self, event: QPaintEvent):
@@ -291,6 +361,15 @@ class Reticle(QWidget):
         qp.end()
 
 
+def thread_finisher(thread):
+
+    def finish_thread():
+        thread.quit()
+        thread.wait()
+
+    return finish_thread
+
+
 def main():
     picam2 = Picamera2()
     picam2.configure(picam2.create_preview_configuration({"size": (640, 480)}))
@@ -322,13 +401,12 @@ def main():
     button_B.setGeometry(5, 5 + button_A.height(), button_B.width(), button_B.height())
 
     reticle = Reticle(320, 240, 20, button_window)
-    button_A.button_pressed.connect(reticle.on_range_triggered)
-    button_A.button_released.connect(reticle.on_range_released)
 
     power_monitor = PowerMonitor(button_window)
     power_monitor.setGeometry(5, 480 - 5 - 40, 640 - 5 - 5, 40)
 
     ## Starting properly now
+    # TODO: move stop signal to button window and have close button trigger it
     picam2.start()
     qpicamera2.show()
 
@@ -338,17 +416,21 @@ def main():
 
     power_reader = PowerReader()
     power_reader.output.connect(power_monitor.power_reading)
-
-    thread = QThread()
-    power_reader.moveToThread(thread)
-    thread.started.connect(power_reader.start)
+    power_thread = QThread()
+    power_reader.moveToThread(power_thread)
+    power_thread.started.connect(power_reader.start)
     close_button.clicked.connect(power_reader.stop)
+    power_reader.finished.connect(thread_finisher(power_thread))
 
-    def finish_thread():
-        thread.quit()
-        thread.wait()
-
-    power_reader.finished.connect(finish_thread)
+    range_reader = RangeReader()
+    range_reader.reading.connect(reticle.on_range_reading)
+    button_A.button_pressed.connect(range_reader.on_start_reading)
+    button_A.button_released.connect(range_reader.on_stop_reading)
+    range_thread = QThread()
+    range_reader.moveToThread(range_thread)
+    range_thread.started.connect(range_reader.start)
+    close_button.clicked.connect(range_reader.stop)
+    range_reader.finished.connect(thread_finisher(range_thread))
 
     def stop_and_exit():
         qpicamera2.close()
@@ -357,7 +439,8 @@ def main():
 
     close_button.clicked.connect(stop_and_exit)
 
-    thread.start()
+    power_thread.start()
+    range_thread.start()
     app.exec()
 
     picam2.stop()
