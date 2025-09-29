@@ -1,3 +1,4 @@
+import os
 import sys
 from dataclasses import dataclass
 from datetime import datetime
@@ -16,7 +17,7 @@ from PyQt5.QtCore import (
 )
 from PyQt5.QtGui import QFont, QPainter, QPaintEvent, QPen
 from PyQt5.QtWidgets import QPushButton, QHBoxLayout, QApplication, QWidget, QLabel
-from gpiozero import Button, exc
+from gpiozero import Button
 from picamera2 import Picamera2  # type: ignore
 from picamera2.previews.qt import QGlPicamera2  # type: ignore
 
@@ -29,6 +30,11 @@ TRANSPARENT_STYLESHEET = (
 
 FONT = QFont("Deja Vu Sans Mono", 18)
 FONT_LG = QFont("Deja Vu Sans Mono", 24)
+
+if run_dir := os.environ.get("XDG_RUNTIME_DIR"):
+    SHUTDOWN_FILE = Path(run_dir) / "chaoscope-shutdown"
+else:
+    SHUTDOWN_FILE = None
 
 
 class OverlayWindow(QWidget):
@@ -391,7 +397,6 @@ class Reticle(QWidget):
 
 
 def thread_finisher(thread):
-
     def finish_thread():
         thread.quit()
         thread.wait()
@@ -399,7 +404,32 @@ def thread_finisher(thread):
     return finish_thread
 
 
+def clear_shutdown_file() -> None:
+    if not SHUTDOWN_FILE:
+        return
+    try:
+        SHUTDOWN_FILE.unlink()
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print(f"Error removing shutdown file: {e}", file=sys.stderr)
+
+
+def write_shutdown_file(exit_code: int) -> None:
+    if not SHUTDOWN_FILE:
+        return
+    value = b"1" if exit_code == 2 else b"0"
+    try:
+        SHUTDOWN_FILE.write_bytes(value)
+    except Exception as e:
+        print(f"Error writing shutdown file: {e}", file=sys.stderr)
+
+
 def main() -> int:
+    # Remove shutdown file from previous run, if required
+    clear_shutdown_file()
+
+    # Picam setup, 640x480@30
     picam2 = Picamera2()
     preview_config = picam2.create_preview_configuration(
         main={"size": (640, 480)},
@@ -479,14 +509,19 @@ def main() -> int:
     power_thread.start()
     range_thread.start()
 
+    exit_code = 0
     try:
         app.exec()
-        return overlay_window.exit_code
+        exit_code = overlay_window.exit_code
     except KeyboardInterrupt:
-        return 0
+        exit_code = 0
     finally:
         picam2.stop()
         # Any other cleanup? Lidar? GPIOs?
+        # Write value to shutdown file
+        write_shutdown_file(exit_code)
+
+    return exit_code
 
 
 if __name__ == "__main__":
