@@ -1,14 +1,20 @@
 #!/bin/bash
 
+do_shutdown=0
+
 while true; do
     # TODO: parameterize
     /usr/bin/python3 ~/chaoscope/chaoscope.py
-    if [[ $? -eq 0 ]]; then
-        echo "Exiting..."
+    if [[ $? -eq 2 ]]; then
+        do_shutdown=1
         break
     fi
-    echo "Restarting..."
+    echo "Restarting application..."
 done
 
-echo "Shutting down..."
-sudo poweroff
+if [[ $do_shutdown -eq 1 ]]; then
+    echo "Shutting down..."
+    sudo poweroff
+else
+    echo "Exiting application..."
+fi

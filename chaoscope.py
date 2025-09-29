@@ -16,7 +16,7 @@ from PyQt5.QtCore import (
 )
 from PyQt5.QtGui import QFont, QPainter, QPaintEvent, QPen
 from PyQt5.QtWidgets import QPushButton, QHBoxLayout, QApplication, QWidget, QLabel
-from gpiozero import Button
+from gpiozero import Button, exc
 from picamera2 import Picamera2  # type: ignore
 from picamera2.previews.qt import QGlPicamera2  # type: ignore
 
@@ -49,13 +49,13 @@ class OverlayWindow(QWidget):
         self.exit_code = 0
 
     def on_close(self):
-        # Set successful exit code
-        self.exit_code = 0
+        # Set special exit code to indicate shutdown after exit
+        self.exit_code = 2
         self.finish.emit()
 
     def on_restart(self):
-        # Set special exit code to indicate restart after exit
-        self.exit_code = 2
+        # Set successful exit code
+        self.exit_code = 0
         self.finish.emit()
 
 
@@ -479,12 +479,15 @@ def main() -> int:
 
     power_thread.start()
     range_thread.start()
-    app.exec()
 
-    picam2.stop()
-    # Any other cleanup?
-
-    return overlay_window.exit_code
+    try:
+        app.exec()
+        return overlay_window.exit_code
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        picam2.stop()
+        # Any other cleanup? Lidar? GPIOs?
 
 
 if __name__ == "__main__":
