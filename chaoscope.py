@@ -314,7 +314,6 @@ class RangeReader(QObject):
 
 
 class Reticle(QWidget):
-
     # TODO: determine from font somehow
     LABEL_HEIGHT = 40
     LABEL_MIN_WIDTH = 100
@@ -342,7 +341,7 @@ class Reticle(QWidget):
 
         self.setGeometry(
             self.center_x - (self.text_width // 2),
-            self.center_y - self.outer_radius,
+            self.center_y - (self.LABEL_HEIGHT + self.outer_radius),
             self.text_width,
             (self.outer_radius * 2) + self.LABEL_HEIGHT,
         )
@@ -367,17 +366,11 @@ class Reticle(QWidget):
         width = rect.width()
         top_left = rect.topLeft()
         center_x = top_left.x() + (width // 2)
-        center_y = top_left.y() + self.outer_radius
+        center_y = top_left.y() + self.LABEL_HEIGHT + self.outer_radius
         label_x = top_left.x()
-        label_y = top_left.y() + (self.outer_radius * 2)
+        label_y = top_left.y()
         label_w = width
         label_h = rect.height() - (self.outer_radius * 2)
-
-        qp.setPen(
-            QPen(Qt.GlobalColor.white, self.RETICLE_LINE_WIDTH, Qt.PenStyle.SolidLine)
-        )
-        qp.drawEllipse(QPoint(center_x, center_y), self.radius, self.radius)
-        # TODO: draw center point when ranging active
 
         if self.text:
             qp.setPen(QPen(Qt.GlobalColor.white))
@@ -387,6 +380,12 @@ class Reticle(QWidget):
                 Qt.AlignmentFlag.AlignCenter,
                 self.text,
             )
+
+        qp.setPen(
+            QPen(Qt.GlobalColor.white, self.RETICLE_LINE_WIDTH, Qt.PenStyle.SolidLine)
+        )
+        qp.drawEllipse(QPoint(center_x, center_y), self.radius, self.radius)
+        # TODO: draw center point when ranging active
 
         qp.end()
 
@@ -438,7 +437,7 @@ def main() -> int:
     button_B = ButtonLabel(24, "B", overlay_window)
     button_B.setGeometry(5, 5 + button_A.height(), button_B.width(), button_B.height())
 
-    reticle = Reticle(320, 240, 20, overlay_window)
+    reticle = Reticle(320, 280, 50, overlay_window)
 
     power_monitor = PowerMonitor(overlay_window)
     power_monitor.setGeometry(5, 480 - 5 - 40, 640 - 5 - 5, 40)
