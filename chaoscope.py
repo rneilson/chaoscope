@@ -236,7 +236,7 @@ class PowerMonitor(QWidget):
 
 class ButtonLabel(QLabel):
     button: Button
-    button_name: str
+    button_text: str
     button_active: bool
     button_pressed = pyqtSignal()
     button_released = pyqtSignal()
@@ -249,7 +249,7 @@ class ButtonLabel(QLabel):
         flags: Qt.WindowFlags | Qt.WindowType = Qt.WindowFlags(),
     ):
         super().__init__(parent=parent, flags=flags)
-        self.button_name = name
+        self.button_text = name
         self.button_active = False
         self.button = Button(pin, bounce_time=0.01)
         self.button.when_activated = self.on_button_pressed
@@ -261,7 +261,9 @@ class ButtonLabel(QLabel):
         self.update_ui()
 
     def update_ui(self):
-        self.setText(f"{self.button_name}: [{'X' if self.button_active else ' '}]")
+        self.setText(
+            self.button_text if self.button_active else (" " * len(self.button_text))
+        )
 
     def on_button_pressed(self):
         self.button_active = True
@@ -518,10 +520,10 @@ def main() -> int:
     restart_button.setGeometry((640 - 60 - 60 - 5 - 5), 5, 60, 60)
     restart_button.clicked.connect(overlay_window.on_restart)
 
-    button_A = ButtonLabel(23, "A", overlay_window)
+    button_A = ButtonLabel(23, "Ranging", overlay_window)
     button_A.setGeometry(5, 5, button_A.width(), button_A.height())
 
-    button_B = ButtonLabel(24, "B", overlay_window)
+    button_B = ButtonLabel(24, "Capturing", overlay_window)
     button_B.setGeometry(5, 5 + button_A.height(), button_B.width(), button_B.height())
 
     # TODO: get value of enable_reticle from cli arg or something
