@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
+from time import sleep
 
 from PyQt5.QtCore import (
     Qt,
@@ -17,9 +18,10 @@ from PyQt5.QtCore import (
 )
 from PyQt5.QtGui import QFont, QPainter, QPaintEvent, QPen
 from PyQt5.QtWidgets import QPushButton, QHBoxLayout, QApplication, QWidget, QLabel
-from gpiozero import Button
+from gpiozero import Button, DigitalInputDevice
 from picamera2 import Picamera2  # type: ignore
 from picamera2.previews.qt import QGlPicamera2  # type: ignore
+from smbus2 import SMBus
 
 TRANSLUCENT_STYLESHEET = (
     "color: white; background-color: rgba(255, 255, 255, 63); border: 1px solid white; "
@@ -27,9 +29,19 @@ TRANSLUCENT_STYLESHEET = (
 TRANSPARENT_STYLESHEET = (
     "color: white; background-color: rgba(255, 255, 255, 0); border: none; "
 )
-
 FONT = QFont("Deja Vu Sans Mono", 18)
 FONT_LG = QFont("Deja Vu Sans Mono", 24)
+
+LIDAR_I2C_ADDRESS = 0x10
+LIDAR_REG_DIST = 0x00
+LIDAR_REG_ENABLE = 0x25
+LIDAR_REG_FREQ = 0x26
+LIDAR_REG_MODE = 0x23
+LIDAR_REG_SAVE = 0x20
+LIDAR_REG_REBOOT = 0x21
+LIDAR_REG_TRIGGER = 0x24
+
+ENABLE_RETICLE = False
 
 if run_dir := os.environ.get("XDG_RUNTIME_DIR"):
     SHUTDOWN_FILE = Path(run_dir) / "chaoscope-shutdown"
@@ -263,47 +275,74 @@ class ButtonLabel(QLabel):
 
 
 class RangeReader(QObject):
+    READING_INTERVAL_MS = 40  # 25 Hz for now
+    MIN_DISTANCE_CM = 25
+    MAX_DISTANCE_CM = 800
+
     is_reading: bool
+    data_ready = pyqtSignal()
     reading = pyqtSignal(float)
     finished = pyqtSignal()
-    # TEMP
-    _timer: QTimer | None
+    _i2c: SMBus
+    _gpio: DigitalInputDevice
+    # # TEMP
+    # _timer: QTimer | None
 
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent=parent)
-        # TODO: create GPIO input for data-ready pin
-        # TODO: open I2C bus
-        # TODO: set lidar disabled
-        # TODO: set lidar frequency to 50Hz
         self.is_reading = False
-        # TEMP
         self._timer = None
+        # Self-signal to link between threads
+        self.data_ready.connect(self.on_data_ready)
 
     def start(self):
-        # TODO: connect GPIO input to on_data_ready slot
-        # TEMP: timer to simulate regular readings
-        # Might keep it around to clear readings after some amount of time
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self.on_data_ready)
-        self._timer.start(20)
+        try:
+            # Open I2C bus
+            self._i2c = SMBus(1)
+            # Set lidar disabled, set trigger mode (frequency to 0)
+            self._i2c.write_byte_data(LIDAR_I2C_ADDRESS, LIDAR_REG_ENABLE, 1)
+            self._i2c.write_byte_data(LIDAR_I2C_ADDRESS, LIDAR_REG_MODE, 1)
+            self._i2c.write_byte_data(LIDAR_I2C_ADDRESS, LIDAR_REG_SAVE, 1)
+            self._i2c.write_byte_data(LIDAR_I2C_ADDRESS, LIDAR_REG_REBOOT, 2)
+            sleep(0.1)  # guesstimate 100ms
+            print("Lidar initialized")
+            # Create GPIO input for data-ready pin
+            self._gpio = DigitalInputDevice(16)
+            # Connect GPIO input to on_data_ready slot
+            self._gpio.when_activated = self.data_ready.emit
+            # Timer to trigger regular readings
+            self._timer = QTimer(self)
+            self._timer.timeout.connect(self.on_reading_triggered)
+        except Exception as e:
+            print(f"Error starting range reader: {e}", file=sys.stderr)
+            raise
 
     def stop(self):
-        self.on_stop_reading()
-        # TEMP
+        self.is_reading = False
         self._timer.stop()
         self._timer = None
         self.finished.emit()
 
+    @pyqtSlot()
     def on_start_reading(self):
-        # TODO: set lidar enabled
-        self.is_reading = True
+        # Initial reading if only to clear the register
+        self.on_reading_triggered()
+        self.on_data_ready()
+        self._timer.start(self.READING_INTERVAL_MS)
 
+    @pyqtSlot()
     def on_stop_reading(self):
-        # TODO: set lidar disabled
+        self._timer.stop()
         self.is_reading = False
         # Emit special value to indicate no reading
         self.reading.emit(0.0)
 
+    @pyqtSlot()
+    def on_reading_triggered(self):
+        self.is_reading = True
+        self._i2c.write_byte_data(LIDAR_I2C_ADDRESS, LIDAR_REG_TRIGGER, 1)
+
+    @pyqtSlot()
     def on_data_ready(self):
         # For now, early return if not reading - we may have to revisit this if
         # we need to read from the lidar and discard instead
@@ -311,12 +350,25 @@ class RangeReader(QObject):
             # Emit special value to indicate no reading
             self.reading.emit(0.0)
             return
-        # TODO: read distance and amplitude from lidar
-        # TODO: return special value if too close/far/weak/strong
-        # TEMP: make up a random value here
-        now = datetime.now()
-        fake_range = float(now.second) + (now.microsecond / 1_000_000.0)
-        self.reading.emit(fake_range)
+        # Read distance and amplitude from lidar
+        try:
+            vals = self._i2c.read_i2c_block_data(LIDAR_I2C_ADDRESS, LIDAR_REG_DIST, 4)
+        except OSError as e:
+            print(f"Error reading from lidar: {e}", file=sys.stderr)
+            self.reading.emit(-1.0)
+            return
+        dist = (vals[1] << 8) + vals[0]
+        amp = (vals[3] << 8) + vals[2]
+        # Return special value if too close/far/weak/strong
+        if (
+            dist < self.MIN_DISTANCE_CM
+            or dist > self.MAX_DISTANCE_CM
+            or amp < 100
+            or amp >= 65535
+        ):
+            self.reading.emit(-1.0)
+        else:
+            self.reading.emit(float(dist) / 100.0)
 
 
 class Reticle(QWidget):
@@ -330,6 +382,7 @@ class Reticle(QWidget):
         center_x: int,
         center_y: int,
         radius: int,
+        enable_reticle: bool = ENABLE_RETICLE,
         parent: QWidget | None = None,
         flags: Qt.WindowFlags | Qt.WindowType = Qt.WindowFlags(),
     ) -> None:
@@ -337,6 +390,7 @@ class Reticle(QWidget):
         self.center_x = center_x
         self.center_y = center_y
         self.radius = radius
+        self.enable_reticle = enable_reticle
         self.outer_radius = radius + self.RETICLE_LINE_WIDTH
         self.text_width = max(self.outer_radius * 2, self.LABEL_MIN_WIDTH)
         self.text = ""
@@ -358,7 +412,7 @@ class Reticle(QWidget):
             self.text = ""
         elif range < 0.0:
             # Negative value indicates invalid reading (too close/far/weak/strong)
-            self.text = "N/A"
+            self.text = "---"
         else:
             self.text = f"{range:.2f}m"
         self.update()
@@ -387,11 +441,14 @@ class Reticle(QWidget):
                 self.text,
             )
 
-        qp.setPen(
-            QPen(Qt.GlobalColor.white, self.RETICLE_LINE_WIDTH, Qt.PenStyle.SolidLine)
-        )
-        qp.drawEllipse(QPoint(center_x, center_y), self.radius, self.radius)
-        # TODO: draw center point when ranging active
+        if self.enable_reticle:
+            qp.setPen(
+                QPen(
+                    Qt.GlobalColor.white, self.RETICLE_LINE_WIDTH, Qt.PenStyle.SolidLine
+                )
+            )
+            qp.drawEllipse(QPoint(center_x, center_y), self.radius, self.radius)
+            # TODO: draw center point when ranging active
 
         qp.end()
 
@@ -467,7 +524,8 @@ def main() -> int:
     button_B = ButtonLabel(24, "B", overlay_window)
     button_B.setGeometry(5, 5 + button_A.height(), button_B.width(), button_B.height())
 
-    reticle = Reticle(320, 280, 50, overlay_window)
+    # TODO: get value of enable_reticle from cli arg or something
+    reticle = Reticle(320, 275, 50, parent=overlay_window)
 
     power_monitor = PowerMonitor(overlay_window)
     power_monitor.setGeometry(5, 480 - 5 - 40, 640 - 5 - 5, 40)
