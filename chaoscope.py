@@ -17,7 +17,14 @@ from PyQt5.QtCore import (
     pyqtSlot,
 )
 from PyQt5.QtGui import QFont, QPainter, QPaintEvent, QPen
-from PyQt5.QtWidgets import QPushButton, QHBoxLayout, QApplication, QWidget, QLabel
+from PyQt5.QtWidgets import (
+    QPushButton,
+    QHBoxLayout,
+    QVBoxLayout,
+    QApplication,
+    QWidget,
+    QLabel,
+)
 from gpiozero import Button, DigitalInputDevice
 from picamera2 import Picamera2  # type: ignore
 from picamera2.previews.qt import QGlPicamera2  # type: ignore
@@ -29,7 +36,8 @@ TRANSLUCENT_STYLESHEET = (
 TRANSPARENT_STYLESHEET = (
     "color: white; background-color: rgba(255, 255, 255, 0); border: none; "
 )
-FONT = QFont("Deja Vu Sans Mono", 18)
+FONT_SM = QFont("Deja Vu Sans Mono", 12)
+FONT_MD = QFont("Deja Vu Sans Mono", 18)
 FONT_LG = QFont("Deja Vu Sans Mono", 24)
 
 LIDAR_I2C_ADDRESS = 0x10
@@ -42,6 +50,9 @@ LIDAR_REG_REBOOT = 0x21
 LIDAR_REG_TRIGGER = 0x24
 
 ENABLE_RETICLE = False
+
+BASE_DIR = Path(__file__).parent
+PHOTO_DIR = BASE_DIR / "photos"
 
 if run_dir := os.environ.get("XDG_RUNTIME_DIR"):
     SHUTDOWN_FILE = Path(run_dir) / "chaoscope-shutdown"
@@ -63,7 +74,7 @@ class OverlayWindow(QWidget):
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint)
         self.setWindowTitle("Chaoscope controls")
         self.setCursor(Qt.CursorShape.BlankCursor)
-        self.setFont(FONT)
+        self.setFont(FONT_MD)
         self.exit_code = 0
 
     def on_close(self):
@@ -188,7 +199,7 @@ class PowerLabel(QLabel):
 
     def init_ui(self):
         self.setStyleSheet(TRANSPARENT_STYLESHEET)
-        self.setFont(FONT)
+        self.setFont(FONT_MD)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.update_ui()
 
@@ -236,6 +247,7 @@ class PowerMonitor(QWidget):
 
 class ButtonObject(QObject):
     button: Button
+    button_active: bool
     button_pressed = pyqtSignal()
     button_released = pyqtSignal()
 
@@ -246,58 +258,88 @@ class ButtonObject(QObject):
     ):
         super().__init__(parent=parent)
         self.button = Button(pin, bounce_time=0.01)
+        self.button_active = False
         self.button.when_activated = self.on_button_pressed
         self.button.when_deactivated = self.on_button_released
 
     def on_button_pressed(self):
+        self.button_active = True
         self.button_pressed.emit()
 
     def on_button_released(self):
+        self.button_active = False
         self.button_released.emit()
 
 
-class ButtonLabel(QLabel):
-    button: Button
-    button_text: str
-    button_active: bool
-    button_pressed = pyqtSignal()
-    button_released = pyqtSignal()
+class CameraCapturer(QWidget):
+    METADATA_LINES: int = 10
 
     def __init__(
         self,
         pin: int,
-        name: str,
+        picam2: Picamera2,
         parent: QWidget | None = None,
         flags: Qt.WindowFlags | Qt.WindowType = Qt.WindowFlags(),
     ):
-        super().__init__(parent=parent, flags=flags)
-        self.button_text = name
-        self.button_active = False
-        self.button = Button(pin, bounce_time=0.01)
-        self.button.when_activated = self.on_button_pressed
-        self.button.when_deactivated = self.on_button_released
+        super().__init__(parent, flags)
+        self.button_obj = ButtonObject(pin, self)
+        self.capture_label = QLabel()
+        self.metadata_label = QLabel()
+        self.layout_v = QVBoxLayout(self)
+        self.picam2 = picam2
+
+        self.button_obj.button_pressed.connect(self.on_button_pressed)
+        self.button_obj.button_released.connect(self.on_button_released)
+
         self.init_ui()
 
-    def init_ui(self):
+    def init_ui(self) -> None:
+        self.capture_label.setFont(FONT_MD)
         self.setStyleSheet(TRANSPARENT_STYLESHEET)
-        self.setTextFormat(Qt.TextFormat.PlainText)
-        self.update_ui()
+        self.capture_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self.capture_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.capture_label.setText(" " * len(self._img_filename(0)))
+
+        self.metadata_label.setFont(FONT_SM)
+        self.setStyleSheet(TRANSPARENT_STYLESHEET)
+        self.metadata_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self.metadata_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.metadata_label.setText(
+            "\n".join([(" " * 20) for _ in range(self.METADATA_LINES)])
+        )
+
+        self.layout_v.addWidget(self.capture_label)
+        self.layout_v.addWidget(self.metadata_label)
+
+    def _img_filename(self, num: int) -> str:
+        return f"img_{num:06}.jpg"
 
     def update_ui(self):
-        self.setText(
-            self.button_text if self.button_active else (" " * len(self.button_text))
-        )
+        if self.button_obj.button_active:
+            # TEMP
+            self.capture_label.setText(self._img_filename(0))
+            self.metadata_label.setText(
+                "\n".join([f"Line {i+1}" for i in range(self.METADATA_LINES)])
+            )
+        else:
+            # TEMP
+            self.capture_label.setText(" " * len(self._img_filename(0)))
+            self.metadata_label.setText(
+                "\n".join([(" " * 20) for _ in range(self.METADATA_LINES)])
+            )
+        self.capture_label.adjustSize()
+        self.metadata_label.adjustSize()
         self.adjustSize()
 
+    @pyqtSlot()
     def on_button_pressed(self):
-        self.button_active = True
+        # TODO: actual stuff
         self.update_ui()
-        self.button_pressed.emit()
 
+    @pyqtSlot()
     def on_button_released(self):
-        self.button_active = False
+        # TODO: actual stuff
         self.update_ui()
-        self.button_released.emit()
 
 
 class RangeReader(QObject):
@@ -460,7 +502,7 @@ class Reticle(QWidget):
 
         if self.text:
             qp.setPen(QPen(Qt.GlobalColor.white))
-            qp.setFont(FONT)
+            qp.setFont(FONT_MD)
             qp.drawText(
                 QRect(label_x, label_y, label_w, label_h),
                 Qt.AlignmentFlag.AlignCenter,
@@ -512,24 +554,30 @@ def main() -> int:
     # Remove shutdown file from previous run, if required
     clear_shutdown_file()
 
-    # Picam setup, 640x480@30
+    print("Starting chaoscope...")
+
+    app = QApplication([])
+
+    ## Picam setup, 640x480@30
+    # TODO: move to below rest of GUI setup
     picam2 = Picamera2()
     preview_config = picam2.create_preview_configuration(
         main={"size": (640, 480)},
         controls={"FrameDurationLimits": (33333, 33333)},
     )
+    still_config = picam2.create_still_configuration()  # TODO: tweak
     picam2.configure(preview_config)
-
-    app = QApplication([])
 
     qpicamera2 = QGlPicamera2(picam2, width=640, height=480, keep_ar=False)
     qpicamera2.setWindowFlag(Qt.WindowType.FramelessWindowHint)
     qpicamera2.setGeometry(0, 0, 640, 480)
     qpicamera2.setWindowTitle("Chaoscope camera")
 
+    ## Main window
     overlay_window = OverlayWindow()
     overlay_window.setGeometry(0, 0, 640, 480)
 
+    ## Restart/exit buttons
     close_button = QPushButton(overlay_window)
     close_button.setStyleSheet(TRANSLUCENT_STYLESHEET)
     close_button.setFont(FONT_LG)
@@ -544,43 +592,39 @@ def main() -> int:
     restart_button.setGeometry((640 - 60 - 60 - 20 - 5), 5, 60, 60)
     restart_button.clicked.connect(overlay_window.on_restart)
 
-    button_A = ButtonObject(23, overlay_window)
-
-    button_B = ButtonLabel(24, "Capturing", overlay_window)
-    button_B.setGeometry(5, 5, button_B.width(), button_B.height())
-
-    # TODO: get value of enable_reticle from cli arg or something
-    reticle = Reticle(320, 275, 50, parent=overlay_window)
-
+    ## Power monitoring
     power_monitor = PowerMonitor(overlay_window)
     power_monitor.setGeometry(5, 480 - 5 - 40, 640 - 5 - 5, 40)
 
-    ## Starting properly now
-    # TODO: move stop signal to button window and have close button trigger it
-    picam2.start()
-    qpicamera2.show()
-
-    overlay_window.show()
-    overlay_window.raise_()
-    overlay_window.activateWindow()
-
     power_reader = PowerReader()
     power_reader.output.connect(power_monitor.power_reading)
+
     power_thread = QThread()
     power_reader.moveToThread(power_thread)
     power_thread.started.connect(power_reader.start)
     overlay_window.finish.connect(power_reader.stop)
     power_reader.finished.connect(thread_finisher(power_thread))
 
+    ## Lidar rangefinder
+    button_A = ButtonObject(23, overlay_window)
+
+    # TODO: get value of enable_reticle from cli arg or something
+    reticle = Reticle(320, 275, 50, parent=overlay_window)
+
     range_reader = RangeReader()
     range_reader.reading.connect(reticle.on_range_reading)
     button_A.button_pressed.connect(range_reader.on_start_reading)
     button_A.button_released.connect(range_reader.on_stop_reading)
+
     range_thread = QThread()
     range_reader.moveToThread(range_thread)
     range_thread.started.connect(range_reader.start)
     overlay_window.finish.connect(range_reader.stop)
     range_reader.finished.connect(thread_finisher(range_thread))
+
+    ## Photo capture
+    button_B = CameraCapturer(24, picam2, overlay_window)
+    button_B.setGeometry(5, 5, button_B.width(), button_B.height())
 
     def stop_and_exit():
         qpicamera2.close()
@@ -588,6 +632,14 @@ def main() -> int:
         app.quit()
 
     overlay_window.finish.connect(stop_and_exit)
+
+    ## Starting properly now
+    picam2.start()
+    qpicamera2.show()
+
+    overlay_window.show()  # TODO: move up to before camera startup
+    overlay_window.raise_()
+    overlay_window.activateWindow()
 
     power_thread.start()
     range_thread.start()
