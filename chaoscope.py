@@ -280,7 +280,6 @@ class CameraCapturer(QWidget):
         pin: int,
         picam2: Picamera2,
         qpicamera2: QGlPicamera2,
-        still_config: dict[str, Any] | None = None,
         parent: QWidget | None = None,
         flags: Qt.WindowFlags | Qt.WindowType = Qt.WindowFlags(),
     ):
@@ -297,7 +296,6 @@ class CameraCapturer(QWidget):
 
         self.picam2 = picam2
         self.qpicamera2 = qpicamera2
-        self.still_config: dict[str, Any] = still_config or {}
 
         self.button_obj.button_pressed.connect(self.on_button_pressed)
         self.button_obj.button_released.connect(self.on_button_released)
@@ -340,7 +338,7 @@ class CameraCapturer(QWidget):
             self.capture_label.setText(" " * img_len)
         if self.img_metadata:
             self.metadata_label.setText(
-                "\n".join(f"{k}: {v}" for k, v in self.img_metadata.items())
+                "\n".join(f"{k}: {v}" for k, v in self._get_display_metadata().items())
             )
         else:
             self.metadata_label.setText(
@@ -353,10 +351,12 @@ class CameraCapturer(QWidget):
     def on_completed_request(self, request: CompletedRequest) -> None:
         counter = self._get_next_img_counter()
         self.img_filename = self._img_filename(counter)
-        request.save("main", str(PHOTO_DIR / self.img_filename))
-        self._write_img_counter(counter)
         self.img_metadata = request.get_metadata()
-        # TODO: get lowres preview image
+        # TODO: grab array and release request early, then save?
+        request.save("main", str(PHOTO_DIR / self.img_filename))
+        request.release()
+        self._write_img_counter(counter)
+        # TODO: get lowres preview image?
 
     @pyqtSlot()
     def on_button_pressed(self) -> None:
@@ -398,10 +398,25 @@ class CameraCapturer(QWidget):
         counter_file = PHOTO_DIR / "counter"
         counter_file.write_text(f"{counter:06}")
 
+    def _get_display_metadata(self) -> dict[str, Any]:
+        metadata = {}
+        if not self.img_metadata:
+            return metadata
+
+        keys = ("SensorTimestamp", "ExposureTime", "AnalogueGain", "DigitalGain")
+        for key in keys:
+            if key not in self.img_metadata:
+                continue
+            value = self.img_metadata[key]
+            if isinstance(value, float):
+                value = f"{value:.4f}"
+            metadata[key] = value
+
+        return metadata
+
     def _start_capture(self) -> None:
         self.capturing = True
-        self.picam2.switch_mode_and_capture_request(
-            self.still_config,
+        self.picam2.capture_request(
             wait=False,
             signal_function=self.qpicamera2.signal_done,
         )
@@ -413,7 +428,6 @@ class CameraCapturer(QWidget):
         request: CompletedRequest = self.picam2.wait(job)
         # TODO: run on_completed_request in another thread?
         self.on_completed_request(request)
-        request.release()
         self.capturing = False
         # Clear filename/metadata after three seconds
         self._timer = QTimer(self)
@@ -640,25 +654,29 @@ def main() -> int:
 
     app = QApplication([])
 
-    ## Picam setup, 640x480@30
+    ## Picam setup, preview 640x480@30, video/still half-size @ 30fps
     # TODO: move to below rest of GUI setup
     picam2 = Picamera2()
-    preview_config = picam2.create_preview_configuration(
-        main={"size": (640, 480)},
-        controls={"FrameDurationLimits": (33333, 33333)},
-        buffer_count=6,
-    )
-    still_config = picam2.create_still_configuration(
-        main={"size": (1296, 972)},
-        lores={"size": (640, 480)},
+    video_config = picam2.create_video_configuration(
+        main={
+            "size": tuple(ndim // 2 for ndim in picam2.sensor_resolution),
+            "format": "XBGR8888",
+            # "preserve_ar": False,
+        },
+        lores={
+            "size": (640, 480),
+            "format": "YUV420",
+            "preserve_ar": False,
+        },
         controls={
-            "FrameDurationLimits": (100, 33333),
+            "FrameDurationLimits": (33333, 33333),
             "NoiseReductionMode": libcamera.controls.draft.NoiseReductionModeEnum.Fast,
         },
-        buffer_count=2,
+        buffer_count=6,
         display="lores",
+        encode="lores",
     )
-    picam2.configure(preview_config)
+    picam2.configure(video_config)
 
     qpicamera2 = QGlPicamera2(picam2, width=640, height=480, keep_ar=False)
     qpicamera2.setWindowFlag(Qt.WindowType.FramelessWindowHint)
@@ -719,7 +737,6 @@ def main() -> int:
         pin=24,
         picam2=picam2,
         qpicamera2=qpicamera2,
-        still_config=still_config,
         parent=overlay_window,
     )
     capture_button.setGeometry(5, 5, capture_button.width(), capture_button.height())
