@@ -8,6 +8,9 @@
 # for ssh logins, install and configure the libpam-umask package.
 #umask 022
 
+# Set initial brightness
+(echo 75 > /sys/class/backlight/**/brightness) || true
+
 # Autostart chaoscope application
 if [[ ! ${DISPLAY} && ${XDG_VTNR} == 1 && -f "$HOME/chaoscope/autostart" ]]; then
     exec "$HOME/chaoscope/chaoscope.sh"
