@@ -26,8 +26,8 @@ from PyQt5.QtWidgets import (
     QWidget,
     QLabel,
 )
-from gpiozero import Button, ButtonBoard, DigitalInputDevice
-from picamera2 import CompletedRequest, Picamera2  # type: ignore
+from gpiozero import Button, DigitalInputDevice
+from picamera2 import CompletedRequest, Picamera2, libcamera  # type: ignore
 from picamera2.previews.qt import QGlPicamera2  # type: ignore
 from smbus2 import SMBus
 
@@ -411,6 +411,7 @@ class CameraCapturer(QWidget):
 
     def _finish_capture(self, job: object) -> None:
         request: CompletedRequest = self.picam2.wait(job)
+        # TODO: run on_completed_request in another thread?
         self.on_completed_request(request)
         request.release()
         self.capturing = False
@@ -645,8 +646,18 @@ def main() -> int:
     preview_config = picam2.create_preview_configuration(
         main={"size": (640, 480)},
         controls={"FrameDurationLimits": (33333, 33333)},
+        buffer_count=6,
     )
-    still_config = picam2.create_still_configuration()  # TODO: tweak
+    still_config = picam2.create_still_configuration(
+        main={"size": (1296, 972)},
+        lores={"size": (640, 480)},
+        controls={
+            "FrameDurationLimits": (100, 33333),
+            "NoiseReductionMode": libcamera.controls.draft.NoiseReductionModeEnum.Fast,
+        },
+        buffer_count=2,
+        display="lores",
+    )
     picam2.configure(preview_config)
 
     qpicamera2 = QGlPicamera2(picam2, width=640, height=480, keep_ar=False)
