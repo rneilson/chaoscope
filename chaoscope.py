@@ -5,6 +5,7 @@ from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 from time import sleep
+from typing import Any
 
 from PyQt5.QtCore import (
     Qt,
@@ -25,8 +26,8 @@ from PyQt5.QtWidgets import (
     QWidget,
     QLabel,
 )
-from gpiozero import Button, DigitalInputDevice
-from picamera2 import Picamera2  # type: ignore
+from gpiozero import Button, ButtonBoard, DigitalInputDevice
+from picamera2 import CompletedRequest, Picamera2  # type: ignore
 from picamera2.previews.qt import QGlPicamera2  # type: ignore
 from smbus2 import SMBus
 
@@ -278,18 +279,31 @@ class CameraCapturer(QWidget):
         self,
         pin: int,
         picam2: Picamera2,
+        qpicamera2: QGlPicamera2,
+        still_config: dict[str, Any] | None = None,
         parent: QWidget | None = None,
         flags: Qt.WindowFlags | Qt.WindowType = Qt.WindowFlags(),
     ):
         super().__init__(parent, flags)
+        self.capturing = False
+        self.img_filename: str | None = None
+        self.img_metadata: dict[str, Any] | None = None
+        self._timer: QTimer | None = None
+
         self.button_obj = ButtonObject(pin, self)
         self.capture_label = QLabel()
         self.metadata_label = QLabel()
         self.layout_v = QVBoxLayout(self)
+
         self.picam2 = picam2
+        self.qpicamera2 = qpicamera2
+        self.still_config: dict[str, Any] = still_config or {}
 
         self.button_obj.button_pressed.connect(self.on_button_pressed)
         self.button_obj.button_released.connect(self.on_button_released)
+        self.qpicamera2.done_signal.connect(self.on_capture_done)
+        # For now we'll handle requests ourselves
+        # self.picam2.post_callback = self.on_completed_request
 
         self.init_ui()
 
@@ -305,41 +319,106 @@ class CameraCapturer(QWidget):
         self.metadata_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         self.metadata_label.setTextFormat(Qt.TextFormat.PlainText)
         self.metadata_label.setText(
-            "\n".join([(" " * 20) for _ in range(self.METADATA_LINES)])
+            "\n".join([(" " * 24) for _ in range(self.METADATA_LINES)])
         )
 
         self.layout_v.addWidget(self.capture_label)
         self.layout_v.addWidget(self.metadata_label)
 
+        self.update_ui()
+
     def _img_filename(self, num: int) -> str:
         return f"img_{num:06}.jpg"
 
     def update_ui(self):
-        if self.button_obj.button_active:
-            # TEMP
-            self.capture_label.setText(self._img_filename(0))
+        img_len = len(self._img_filename(0))
+        if self.capturing:
+            self.capture_label.setText("Capturing...".ljust(img_len))
+        elif self.img_filename is not None:
+            self.capture_label.setText(self.img_filename or "<error>".ljust(img_len))
+        else:
+            self.capture_label.setText(" " * img_len)
+        if self.img_metadata:
             self.metadata_label.setText(
-                "\n".join([f"Line {i+1}" for i in range(self.METADATA_LINES)])
+                "\n".join(f"{k}: {v}" for k, v in self.img_metadata.items())
             )
         else:
-            # TEMP
-            self.capture_label.setText(" " * len(self._img_filename(0)))
             self.metadata_label.setText(
-                "\n".join([(" " * 20) for _ in range(self.METADATA_LINES)])
+                "\n".join([(" " * 24) for _ in range(self.METADATA_LINES)])
             )
         self.capture_label.adjustSize()
         self.metadata_label.adjustSize()
         self.adjustSize()
 
+    def on_completed_request(self, request: CompletedRequest) -> None:
+        counter = self._get_next_img_counter()
+        self.img_filename = self._img_filename(counter)
+        request.save("main", str(PHOTO_DIR / self.img_filename))
+        self._write_img_counter(counter)
+        self.img_metadata = request.get_metadata()
+        # TODO: get lowres preview image
+
     @pyqtSlot()
-    def on_button_pressed(self):
-        # TODO: actual stuff
+    def on_button_pressed(self) -> None:
+        # TODO: move this to on-release
+        if not self.capturing:
+            self._start_capture()
+        self.update_ui()
+
+    def on_button_released(self) -> None:
+        # TODO: start still capture (once we're doing video capture too)
+        # TODO: stop video capture (once we're doing video capture)
+        self.update_ui()
+
+    @pyqtSlot(object)
+    def on_capture_done(self, job: object) -> None:
+        self._finish_capture(job)
         self.update_ui()
 
     @pyqtSlot()
-    def on_button_released(self):
-        # TODO: actual stuff
+    def on_clear_capture(self) -> None:
+        if not self.capturing:
+            self.img_filename = None
+            self.img_metadata = None
         self.update_ui()
+
+    def _img_filename(self, num: int) -> str:
+        return f"img_{num:06}.jpg"
+
+    def _get_next_img_counter(self) -> int:
+        counter_file = PHOTO_DIR / "counter"
+        try:
+            last_counter = counter_file.read_text().strip()
+        except FileNotFoundError:
+            last_counter = "000000"
+        counter = int(last_counter) + 1
+        return counter
+
+    def _write_img_counter(self, counter: int) -> None:
+        counter_file = PHOTO_DIR / "counter"
+        counter_file.write_text(f"{counter:06}")
+
+    def _start_capture(self) -> None:
+        self.capturing = True
+        self.picam2.switch_mode_and_capture_request(
+            self.still_config,
+            wait=False,
+            signal_function=self.qpicamera2.signal_done,
+        )
+        if self._timer is not None:
+            self._timer.stop()
+            self._timer = None
+
+    def _finish_capture(self, job: object) -> None:
+        request: CompletedRequest = self.picam2.wait(job)
+        self.on_completed_request(request)
+        request.release()
+        self.capturing = False
+        # Clear filename/metadata after three seconds
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self.on_clear_capture)
+        self._timer.setSingleShot(True)
+        self._timer.start(3000)
 
 
 class RangeReader(QObject):
@@ -351,10 +430,9 @@ class RangeReader(QObject):
     data_ready = pyqtSignal()
     reading = pyqtSignal(float)
     finished = pyqtSignal()
-    _i2c: SMBus
-    _gpio: DigitalInputDevice
-    # # TEMP
-    # _timer: QTimer | None
+    _i2c: SMBus | None
+    _gpio: DigitalInputDevice | None
+    _timer: QTimer | None
 
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent=parent)
@@ -556,6 +634,9 @@ def main() -> int:
 
     print("Starting chaoscope...")
 
+    # Doing this here so it doesn't cause delays elsewhere
+    PHOTO_DIR.mkdir(parents=True, exist_ok=True)
+
     app = QApplication([])
 
     ## Picam setup, 640x480@30
@@ -606,15 +687,15 @@ def main() -> int:
     power_reader.finished.connect(thread_finisher(power_thread))
 
     ## Lidar rangefinder
-    button_A = ButtonObject(23, overlay_window)
+    range_button = ButtonObject(23, overlay_window)
 
     # TODO: get value of enable_reticle from cli arg or something
     reticle = Reticle(320, 275, 50, parent=overlay_window)
 
     range_reader = RangeReader()
     range_reader.reading.connect(reticle.on_range_reading)
-    button_A.button_pressed.connect(range_reader.on_start_reading)
-    button_A.button_released.connect(range_reader.on_stop_reading)
+    range_button.button_pressed.connect(range_reader.on_start_reading)
+    range_button.button_released.connect(range_reader.on_stop_reading)
 
     range_thread = QThread()
     range_reader.moveToThread(range_thread)
@@ -623,8 +704,14 @@ def main() -> int:
     range_reader.finished.connect(thread_finisher(range_thread))
 
     ## Photo capture
-    button_B = CameraCapturer(24, picam2, overlay_window)
-    button_B.setGeometry(5, 5, button_B.width(), button_B.height())
+    capture_button = CameraCapturer(
+        pin=24,
+        picam2=picam2,
+        qpicamera2=qpicamera2,
+        still_config=still_config,
+        parent=overlay_window,
+    )
+    capture_button.setGeometry(5, 5, capture_button.width(), capture_button.height())
 
     def stop_and_exit():
         qpicamera2.close()
