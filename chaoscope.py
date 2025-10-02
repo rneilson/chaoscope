@@ -325,9 +325,6 @@ class CameraCapturer(QWidget):
 
         self.update_ui()
 
-    def _img_filename(self, num: int) -> str:
-        return f"img_{num:06}.jpg"
-
     def update_ui(self):
         img_len = len(self._img_filename(0))
         if self.capturing:
@@ -365,6 +362,7 @@ class CameraCapturer(QWidget):
             self._start_capture()
         self.update_ui()
 
+    @pyqtSlot()
     def on_button_released(self) -> None:
         # TODO: start still capture (once we're doing video capture too)
         # TODO: stop video capture (once we're doing video capture)
