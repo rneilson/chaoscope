@@ -14,3 +14,13 @@ is more productive than the scrap heap...
 - TP5100 battery charger
 - 5V switching buck/boost voltage regulator
 - 1 x 18650 lithium-ion battery
+
+### Final form
+
+<img alt="Angle view" src="images/angle_view.jpg" width="510">
+
+<img alt="Side view" src="images/side_view.jpg" width="287">
+
+<img alt="Front view" src="images/front_view.jpg" width="287">
+
+<img alt="Screen view" src="images/screen_view.jpg" width="287">
