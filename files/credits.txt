@@ -1,0 +1,14 @@
+Attributions for original sources
+---------------------------------
+
+Pi3 top/bottom case halves from https://www.thingiverse.com/thing:1427797 by jayftee
+(https://www.thingiverse.com/jayftee). Top half modified to add mounting holes and enlarge the GPIO
+slot.
+
+Pistol grip insert and thumbwheel from https://www.thingiverse.com/thing:1966894 by blu006
+(https://www.thingiverse.com/blu006). Grip is from https://www.thingiverse.com/thing:2147846 by
+cmdctrl (https://www.thingiverse.com/cmdctrl), modified to mount the dual button unit.
+
+Camera bracket largely original work, but includes components from these models:
+- https://www.thingiverse.com/thing:2757527 by magkopian (https://www.thingiverse.com/magkopian)
+- https://www.thingiverse.com/thing:470945 by jc61990 (https://www.thingiverse.com/jc61990)
