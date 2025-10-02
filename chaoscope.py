@@ -659,10 +659,10 @@ def main() -> int:
         main={
             "size": tuple(ndim // 2 for ndim in picam2.sensor_resolution),
             "format": "XBGR8888",
-            # "preserve_ar": False,
+            "preserve_ar": True,
         },
         lores={
-            "size": (640, 480),
+            "size": (1280, 720),
             "format": "YUV420",
             "preserve_ar": False,
         },
@@ -671,7 +671,7 @@ def main() -> int:
             "NoiseReductionMode": libcamera.controls.draft.NoiseReductionModeEnum.Fast,
         },
         buffer_count=6,
-        display="lores",
+        display="main",
         encode="lores",
     )
     picam2.configure(video_config)
