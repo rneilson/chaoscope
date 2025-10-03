@@ -28,6 +28,8 @@ from PyQt5.QtWidgets import (
 )
 from gpiozero import Button, DigitalInputDevice
 from picamera2 import CompletedRequest, Picamera2, libcamera  # type: ignore
+from picamera2.encoders import H264Encoder  # type: ignore
+from picamera2.outputs import PyavOutput  # type: ignore
 from picamera2.previews.qt import QGlPicamera2  # type: ignore
 from smbus2 import SMBus
 
@@ -250,18 +252,29 @@ class ButtonObject(QObject):
     button: Button
     button_active: bool
     button_pressed = pyqtSignal()
+    button_held = pyqtSignal()
     button_released = pyqtSignal()
 
     def __init__(
         self,
         pin: int,
+        hold_time: float | None = None,
         parent: QWidget | None = None,
     ):
         super().__init__(parent=parent)
-        self.button = Button(pin, bounce_time=0.01)
+        button_args = {"bounce_time": 0.01}
+        if hold_time is not None:
+            button_args["hold_time"] = hold_time
+            # button_args["hold_repeat"] = True
+        self.button = Button(pin, **button_args)
         self.button_active = False
         self.button.when_activated = self.on_button_pressed
         self.button.when_deactivated = self.on_button_released
+        if hold_time is not None:
+            self.button.when_held = self.on_button_held
+
+    def on_button_held(self):
+        self.button_held.emit()
 
     def on_button_pressed(self):
         self.button_active = True
@@ -273,6 +286,8 @@ class ButtonObject(QObject):
 
 
 class CameraCapturer(QWidget):
+    CAPTURE_LABEL_LEN: int = 16
+    METADATA_LINE_LEN: int = 24
     METADATA_LINES: int = 10
 
     def __init__(
@@ -289,7 +304,12 @@ class CameraCapturer(QWidget):
         self.img_metadata: dict[str, Any] | None = None
         self._timer: QTimer | None = None
 
-        self.button_obj = ButtonObject(pin, self)
+        self.recording = False
+        self.vid_filename: str | None = None
+        self.vid_started_at: datetime | None = None
+        self.vid_finished_at: datetime | None = None
+
+        self.button_obj = ButtonObject(pin, hold_time=0.5, parent=self)
         self.capture_label = QLabel()
         self.metadata_label = QLabel()
         self.layout_v = QVBoxLayout(self)
@@ -297,12 +317,16 @@ class CameraCapturer(QWidget):
         self.picam2 = picam2
         self.qpicamera2 = qpicamera2
 
+        self.button_obj.button_held.connect(self.on_button_held)
         self.button_obj.button_pressed.connect(self.on_button_pressed)
         self.button_obj.button_released.connect(self.on_button_released)
         self.qpicamera2.done_signal.connect(self.on_capture_done)
         # For now we'll handle requests ourselves
         # self.picam2.post_callback = self.on_completed_request
 
+        self._blank_lines = "\n".join(
+            [(" " * self.METADATA_LINE_LEN) for _ in range(self.METADATA_LINES)]
+        )
         self.init_ui()
 
     def init_ui(self) -> None:
@@ -316,9 +340,7 @@ class CameraCapturer(QWidget):
         self.setStyleSheet(TRANSPARENT_STYLESHEET)
         self.metadata_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         self.metadata_label.setTextFormat(Qt.TextFormat.PlainText)
-        self.metadata_label.setText(
-            "\n".join([(" " * 24) for _ in range(self.METADATA_LINES)])
-        )
+        self.metadata_label.setText(self._blank_lines)
 
         self.layout_v.addWidget(self.capture_label)
         self.layout_v.addWidget(self.metadata_label)
@@ -326,46 +348,68 @@ class CameraCapturer(QWidget):
         self.update_ui()
 
     def update_ui(self):
-        img_len = len(self._img_filename(0))
-        if self.capturing:
-            self.capture_label.setText("Capturing...".ljust(img_len))
+        label_len = self.CAPTURE_LABEL_LEN
+        if self.recording:
+            time_str = self._get_recording_time()
+            self.capture_label.setText(f"Rec {time_str}".ljust(label_len))
+        elif self.vid_filename is not None:
+            self.capture_label.setText(
+                (self.vid_filename or "<error>").ljust(label_len)
+            )
+        elif self.capturing:
+            self.capture_label.setText("Capturing...".ljust(label_len))
         elif self.img_filename is not None:
-            self.capture_label.setText(self.img_filename or "<error>".ljust(img_len))
+            self.capture_label.setText(
+                (self.img_filename or "<error>").ljust(label_len)
+            )
         else:
-            self.capture_label.setText(" " * img_len)
-        if self.img_metadata:
+            self.capture_label.setText(" " * label_len)
+
+        if self.recording:
+            self.metadata_label.setText(self._blank_lines)
+        elif self.vid_finished_at:
+            time_str = self._get_recording_time()
+            # TODO: parameterize encoding/format if we ever vary them
+            self.metadata_label.setText(
+                f"Duration: {time_str}\n" f"Encoding: H264\n" f"Format: MP4\n"
+            )
+        elif self.img_metadata:
             self.metadata_label.setText(
                 "\n".join(f"{k}: {v}" for k, v in self._get_display_metadata().items())
             )
         else:
-            self.metadata_label.setText(
-                "\n".join([(" " * 24) for _ in range(self.METADATA_LINES)])
-            )
+            self.metadata_label.setText(self._blank_lines)
+
         self.capture_label.adjustSize()
         self.metadata_label.adjustSize()
         self.adjustSize()
 
     def on_completed_request(self, request: CompletedRequest) -> None:
-        counter = self._get_next_img_counter()
+        counter = self._get_next_counter()
         self.img_filename = self._img_filename(counter)
         self.img_metadata = request.get_metadata()
         # TODO: grab array and release request early, then save?
         request.save("main", str(PHOTO_DIR / self.img_filename))
         request.release()
-        self._write_img_counter(counter)
+        self._write_counter(counter)
         # TODO: get lowres preview image?
 
     @pyqtSlot()
+    def on_button_held(self) -> None:
+        if not self.recording:
+            self._start_record()
+        self.update_ui()
+
+    @pyqtSlot()
     def on_button_pressed(self) -> None:
-        # TODO: move this to on-release
         if not self.capturing:
             self._start_capture()
         self.update_ui()
 
     @pyqtSlot()
     def on_button_released(self) -> None:
-        # TODO: start still capture (once we're doing video capture too)
-        # TODO: stop video capture (once we're doing video capture)
+        if self.recording:
+            self._finish_record()
         self.update_ui()
 
     @pyqtSlot(object)
@@ -374,16 +418,24 @@ class CameraCapturer(QWidget):
         self.update_ui()
 
     @pyqtSlot()
-    def on_clear_capture(self) -> None:
+    def on_clear(self) -> None:
         if not self.capturing:
             self.img_filename = None
             self.img_metadata = None
+        if not self.recording:
+            self.vid_filename = None
+            self.vid_started_at = None
+            self.vid_finished_at = None
+        self._clear_timer()
         self.update_ui()
 
-    def _img_filename(self, num: int) -> str:
-        return f"img_{num:06}.jpg"
+    def _img_filename(self, counter: int) -> str:
+        return f"img_{counter:06}.jpg"
 
-    def _get_next_img_counter(self) -> int:
+    def _vid_filename(self, counter: int) -> str:
+        return f"vid_{counter:06}.mp4"
+
+    def _get_next_counter(self) -> int:
         counter_file = PHOTO_DIR / "counter"
         try:
             last_counter = counter_file.read_text().strip()
@@ -392,7 +444,7 @@ class CameraCapturer(QWidget):
         counter = int(last_counter) + 1
         return counter
 
-    def _write_img_counter(self, counter: int) -> None:
+    def _write_counter(self, counter: int) -> None:
         counter_file = PHOTO_DIR / "counter"
         counter_file.write_text(f"{counter:06}")
 
@@ -412,15 +464,37 @@ class CameraCapturer(QWidget):
 
         return metadata
 
+    def _get_recording_time(self):
+        if not self.vid_started_at:
+            return "--:--:--"
+
+        duration = (self.vid_finished_at or datetime.now()) - self.vid_started_at
+        dur_secs = round(duration.total_seconds())
+        hours = dur_secs // 3600
+        mins = dur_secs // 60 % 60
+        secs = dur_secs % 60
+
+        return f"{hours:02}:{mins:02}:{secs:02}"
+
+    def _clear_timer(self) -> None:
+        if self._timer is not None:
+            self._timer.stop()
+            self._timer = None
+
+    def _start_timer(self, ms=3000) -> None:
+        self._clear_timer()
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self.on_clear)
+        self._timer.setSingleShot(True)
+        self._timer.start(ms)
+
     def _start_capture(self) -> None:
         self.capturing = True
         self.picam2.capture_request(
             wait=False,
             signal_function=self.qpicamera2.signal_done,
         )
-        if self._timer is not None:
-            self._timer.stop()
-            self._timer = None
+        self._clear_timer()
 
     def _finish_capture(self, job: object) -> None:
         request: CompletedRequest = self.picam2.wait(job)
@@ -428,10 +502,40 @@ class CameraCapturer(QWidget):
         self.on_completed_request(request)
         self.capturing = False
         # Clear filename/metadata after three seconds
+        self._start_timer()
+
+    def _start_record(self) -> None:
+        self.recording = True
+
+        # Get video filename
+        counter = self._get_next_counter()
+        self.vid_filename = self._vid_filename(counter)
+        self._write_counter(counter)
+
+        # Start recording
+        # TODO: set up a CircularOutput2 as well so we make up the half-second
+        # we're currently waiting for the on_button_held signal
+        encoder = H264Encoder(repeat=True)
+        output = PyavOutput(str(PHOTO_DIR / self.vid_filename))
+        self.picam2.start_encoder(encoder, output)
+        self.vid_started_at = datetime.now()
+
+        # Timer to refresh the recording duration in the UI
+        self._clear_timer()
         self._timer = QTimer(self)
-        self._timer.timeout.connect(self.on_clear_capture)
-        self._timer.setSingleShot(True)
-        self._timer.start(3000)
+        self._timer.timeout.connect(self.update_ui)
+        self._timer.start(200)  # Adjust as needed
+
+    def _finish_record(self) -> None:
+        if self.recording:
+            # Stop recording
+            self.picam2.stop_encoder()
+
+            self.vid_finished_at = datetime.now()
+            self.recording = False
+
+        # Clear filename/time after three seconds
+        self._start_timer()
 
 
 class RangeReader(QObject):
@@ -652,7 +756,7 @@ def main() -> int:
 
     app = QApplication([])
 
-    ## Picam setup, preview 640x480@30, video/still half-size @ 30fps
+    ## Picam setup, preview 640x480, video 1280x720, still half-size, 30fps
     # TODO: move to below rest of GUI setup
     picam2 = Picamera2()
     video_config = picam2.create_video_configuration(
@@ -714,7 +818,7 @@ def main() -> int:
     power_reader.finished.connect(thread_finisher(power_thread))
 
     ## Lidar rangefinder
-    range_button = ButtonObject(23, overlay_window)
+    range_button = ButtonObject(23, parent=overlay_window)
 
     # TODO: get value of enable_reticle from cli arg or something
     reticle = Reticle(320, 275, 50, parent=overlay_window)
