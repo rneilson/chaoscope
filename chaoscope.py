@@ -1,3 +1,4 @@
+from json import load
 import os
 import sys
 from dataclasses import dataclass
@@ -75,12 +76,17 @@ class OverlayWindow(QWidget):
         flags: Qt.WindowFlags | Qt.WindowType = Qt.WindowFlags(),
     ) -> None:
         super().__init__(parent, flags)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint)
         self.setWindowTitle("Chaoscope controls")
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, on=True)
         self.setCursor(Qt.CursorShape.BlankCursor)
         self.setFont(FONT_MD)
         self.exit_code = 0
+
+    def bring_to_front(self):
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     def on_close(self):
         # Set special exit code to indicate shutdown after exit
@@ -754,7 +760,7 @@ def main() -> int:
     # Remove shutdown file from previous run, if required
     clear_shutdown_file()
 
-    print("Starting chaoscope...")
+    print(f"{datetime.now().isoformat()} Starting chaoscope...")
 
     # Doing this here so it doesn't cause delays elsewhere
     PHOTO_DIR.mkdir(parents=True, exist_ok=True)
@@ -821,12 +827,23 @@ def main() -> int:
 
     overlay_window.finish.connect(stop_and_exit)
 
+    ## Background loading window
+    # TODO: move to own class
+    loading_window = QWidget()
+    loading_window.setWindowFlag(Qt.WindowType.FramelessWindowHint)
+    loading_window.setStyleSheet("background-color: black")
+    loading_window.setGeometry(0, 0, 640, 480)
+
     # Put into a function so we can defer importing picamera2 stuff
     def start_and_setup_camera():
+        print(f"{datetime.now().isoformat()} Imports started")
+
         from picamera2 import CompletedRequest, Picamera2, libcamera  # type: ignore
         from picamera2.encoders import H264Encoder  # type: ignore
         from picamera2.outputs import PyavOutput  # type: ignore
         from picamera2.previews.qt import QGlPicamera2  # type: ignore
+
+        print(f"{datetime.now().isoformat()} Imports finished, starting camera")
 
         ## Picam setup, preview 640x480, video 1280x720, still half-size, 30fps
         # TODO: move to below rest of GUI setup
@@ -874,16 +891,23 @@ def main() -> int:
         ## Starting properly now
         picam2.start()
         qpicamera2.show()
-        overlay_window.raise_()
 
-    overlay_window.show()
-    overlay_window.raise_()
-    overlay_window.activateWindow()
+        loading_window.close()
+        overlay_window.bring_to_front()
+
+        print(f"{datetime.now().isoformat()} Camera started")
+
+    print(f"{datetime.now().isoformat()} Starting window and threads")
+
+    loading_window.show()
+    overlay_window.bring_to_front()
 
     power_thread.start()
     range_thread.start()
 
-    start_and_setup_camera()
+    print(f"{datetime.now().isoformat()} Threads started, starting window")
+
+    QTimer.singleShot(100, start_and_setup_camera)
 
     exit_code = 0
     try:
@@ -897,6 +921,8 @@ def main() -> int:
         # Any other cleanup? Lidar? GPIOs?
         # Write value to shutdown file
         write_shutdown_file(exit_code)
+
+        print(f"{datetime.now().isoformat()} Finished")
 
     return exit_code
 
