@@ -5,7 +5,13 @@ from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 from time import sleep
-from typing import Any
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from picamera2 import CompletedRequest, Picamera2  # type: ignore
+    from picamera2.encoders import H264Encoder  # type: ignore
+    from picamera2.outputs import PyavOutput  # type: ignore
+    from picamera2.previews.qt import QGlPicamera2  # type: ignore
 
 from PyQt5.QtCore import (
     Qt,
@@ -27,10 +33,6 @@ from PyQt5.QtWidgets import (
     QLabel,
 )
 from gpiozero import Button, DigitalInputDevice
-from picamera2 import CompletedRequest, Picamera2, libcamera  # type: ignore
-from picamera2.encoders import H264Encoder  # type: ignore
-from picamera2.outputs import PyavOutput  # type: ignore
-from picamera2.previews.qt import QGlPicamera2  # type: ignore
 from smbus2 import SMBus
 
 TRANSLUCENT_STYLESHEET = (
@@ -293,8 +295,8 @@ class CameraCapturer(QWidget):
     def __init__(
         self,
         pin: int,
-        picam2: Picamera2,
-        qpicamera2: QGlPicamera2,
+        picam2: "Picamera2",
+        qpicamera2: "QGlPicamera2",
         parent: QWidget | None = None,
         flags: Qt.WindowFlags | Qt.WindowType = Qt.WindowFlags(),
     ):
@@ -384,7 +386,7 @@ class CameraCapturer(QWidget):
         self.metadata_label.adjustSize()
         self.adjustSize()
 
-    def on_completed_request(self, request: CompletedRequest) -> None:
+    def on_completed_request(self, request: "CompletedRequest") -> None:
         counter = self._get_next_counter()
         self.img_filename = self._img_filename(counter)
         self.img_metadata = request.get_metadata()
@@ -497,7 +499,7 @@ class CameraCapturer(QWidget):
         self._clear_timer()
 
     def _finish_capture(self, job: object) -> None:
-        request: CompletedRequest = self.picam2.wait(job)
+        request: "CompletedRequest" = self.picam2.wait(job)
         # TODO: run on_completed_request in another thread?
         self.on_completed_request(request)
         self.capturing = False
@@ -511,6 +513,9 @@ class CameraCapturer(QWidget):
         counter = self._get_next_counter()
         self.vid_filename = self._vid_filename(counter)
         self._write_counter(counter)
+
+        from picamera2.encoders import H264Encoder  # type: ignore
+        from picamera2.outputs import PyavOutput  # type: ignore
 
         # Start recording
         # TODO: set up a CircularOutput2 as well so we make up the half-second
@@ -756,35 +761,6 @@ def main() -> int:
 
     app = QApplication([])
 
-    ## Picam setup, preview 640x480, video 1280x720, still half-size, 30fps
-    # TODO: move to below rest of GUI setup
-    picam2 = Picamera2()
-    video_config = picam2.create_video_configuration(
-        main={
-            "size": tuple(ndim // 2 for ndim in picam2.sensor_resolution),
-            "format": "XBGR8888",
-            "preserve_ar": True,
-        },
-        lores={
-            "size": (1280, 720),
-            "format": "YUV420",
-            "preserve_ar": False,
-        },
-        controls={
-            "FrameDurationLimits": (33333, 33333),
-            "NoiseReductionMode": libcamera.controls.draft.NoiseReductionModeEnum.Fast,
-        },
-        buffer_count=6,
-        display="main",
-        encode="lores",
-    )
-    picam2.configure(video_config)
-
-    qpicamera2 = QGlPicamera2(picam2, width=640, height=480, keep_ar=False)
-    qpicamera2.setWindowFlag(Qt.WindowType.FramelessWindowHint)
-    qpicamera2.setGeometry(0, 0, 640, 480)
-    qpicamera2.setWindowTitle("Chaoscope camera")
-
     ## Main window
     overlay_window = OverlayWindow()
     overlay_window.setGeometry(0, 0, 640, 480)
@@ -834,32 +810,80 @@ def main() -> int:
     overlay_window.finish.connect(range_reader.stop)
     range_reader.finished.connect(thread_finisher(range_thread))
 
-    ## Photo capture
-    capture_button = CameraCapturer(
-        pin=24,
-        picam2=picam2,
-        qpicamera2=qpicamera2,
-        parent=overlay_window,
-    )
-    capture_button.setGeometry(5, 5, capture_button.width(), capture_button.height())
+    to_run_on_stop: list[Callable] = []
+    to_run_on_exit: list[Callable] = []
 
     def stop_and_exit():
-        qpicamera2.close()
+        for func in to_run_on_stop:
+            func()
         overlay_window.close()
         app.quit()
 
     overlay_window.finish.connect(stop_and_exit)
 
-    ## Starting properly now
-    picam2.start()
-    qpicamera2.show()
+    # Put into a function so we can defer importing picamera2 stuff
+    def start_and_setup_camera():
+        from picamera2 import CompletedRequest, Picamera2, libcamera  # type: ignore
+        from picamera2.encoders import H264Encoder  # type: ignore
+        from picamera2.outputs import PyavOutput  # type: ignore
+        from picamera2.previews.qt import QGlPicamera2  # type: ignore
 
-    overlay_window.show()  # TODO: move up to before camera startup
+        ## Picam setup, preview 640x480, video 1280x720, still half-size, 30fps
+        # TODO: move to below rest of GUI setup
+        picam2 = Picamera2()
+        video_config = picam2.create_video_configuration(
+            main={
+                "size": tuple(ndim // 2 for ndim in picam2.sensor_resolution),
+                "format": "XBGR8888",
+                "preserve_ar": True,
+            },
+            lores={
+                "size": (1280, 720),
+                "format": "YUV420",
+                "preserve_ar": False,
+            },
+            controls={
+                "FrameDurationLimits": (33333, 33333),
+                "NoiseReductionMode": libcamera.controls.draft.NoiseReductionModeEnum.Fast,
+            },
+            buffer_count=6,
+            display="main",
+            encode="lores",
+        )
+        picam2.configure(video_config)
+        to_run_on_exit.append(picam2.stop)
+
+        qpicamera2 = QGlPicamera2(picam2, width=640, height=480, keep_ar=False)
+        qpicamera2.setWindowFlag(Qt.WindowType.FramelessWindowHint)
+        qpicamera2.setGeometry(0, 0, 640, 480)
+        qpicamera2.setWindowTitle("Chaoscope camera")
+        to_run_on_stop.append(qpicamera2.close)
+
+        ## Photo capture
+        capture_button = CameraCapturer(
+            pin=24,
+            picam2=picam2,
+            qpicamera2=qpicamera2,
+            parent=overlay_window,
+        )
+        capture_button.setGeometry(
+            5, 5, capture_button.width(), capture_button.height()
+        )
+        capture_button.show()
+
+        ## Starting properly now
+        picam2.start()
+        qpicamera2.show()
+        overlay_window.raise_()
+
+    overlay_window.show()
     overlay_window.raise_()
     overlay_window.activateWindow()
 
     power_thread.start()
     range_thread.start()
+
+    start_and_setup_camera()
 
     exit_code = 0
     try:
@@ -868,7 +892,8 @@ def main() -> int:
     except KeyboardInterrupt:
         exit_code = 0
     finally:
-        picam2.stop()
+        for func in to_run_on_exit:
+            func()
         # Any other cleanup? Lidar? GPIOs?
         # Write value to shutdown file
         write_shutdown_file(exit_code)
