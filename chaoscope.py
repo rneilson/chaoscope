@@ -65,6 +65,8 @@ if run_dir := os.environ.get("XDG_RUNTIME_DIR"):
 else:
     SHUTDOWN_FILE = None
 
+CURRENT_TZ = datetime.now().astimezone().tzinfo
+
 
 class OverlayWindow(QWidget):
     exit_code: int
@@ -97,6 +99,36 @@ class OverlayWindow(QWidget):
         # Set successful exit code
         self.exit_code = 0
         self.finish.emit()
+
+
+class Clock(QWidget):
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        flags: Qt.WindowFlags | Qt.WindowType = Qt.WindowFlags(),
+    ):
+        super().__init__(parent=parent, flags=flags)
+        self._layout = QVBoxLayout(self)
+        self._clock = QLabel()
+        self._timer = QTimer(self)
+        self._timer.setInterval(100)
+        self._timer.timeout.connect(self.update_ui)
+        self._timer.start()
+        self.init_ui()
+
+    def init_ui(self):
+        self._clock.setStyleSheet(TRANSPARENT_STYLESHEET)
+        self._clock.setFont(FONT_MD)
+        self._clock.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._layout.addWidget(self._clock)
+        self.update_ui()
+
+    @pyqtSlot()
+    def update_ui(self):
+        now = datetime.now(tz=CURRENT_TZ)
+        self._clock.setText(now.strftime("%Y-%m-%d %I:%M:%S %p"))
+        self._clock.adjustSize()
+        self.adjustSize()
 
 
 @dataclass
@@ -771,6 +803,10 @@ def main() -> int:
     overlay_window = OverlayWindow()
     overlay_window.setGeometry(0, 0, 640, 480)
 
+    ## Date/time
+    clock = Clock(overlay_window)
+    clock.setGeometry(5, 5, clock.width(), clock.height())
+
     ## Restart/exit buttons
     close_button = QPushButton(overlay_window)
     close_button.setStyleSheet(TRANSLUCENT_STYLESHEET)
@@ -884,7 +920,7 @@ def main() -> int:
             parent=overlay_window,
         )
         capture_button.setGeometry(
-            5, 5, capture_button.width(), capture_button.height()
+            5, clock.height() + 5, capture_button.width(), capture_button.height()
         )
         capture_button.show()
 
