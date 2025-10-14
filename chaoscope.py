@@ -973,14 +973,13 @@ def main() -> int:
     PHOTO_DIR.mkdir(parents=True, exist_ok=True)
 
     # Load calibration file
-    gyro_offsets: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    mag_offsets: tuple[float, float, float] = (0.0, 0.0, 0.0)
     try:
         cal_data = json.loads(CAL_FILE.read_text())
-        gyro_offsets = tuple(cal_data["gyroscope"])
-        mag_offsets = tuple(cal_data["magnometer"])
+        gyro_offsets: tuple[float, float, float] = tuple(cal_data["gyroscope"])
+        mag_offsets: tuple[float, float, float] = tuple(cal_data["magnometer"])
     except FileNotFoundError:
-        print(f"Calibration file {CAL_FILE.absolute()} not found")
+        print(f"Calibration file {CAL_FILE.absolute()} not found", file=sys.stderr)
+        raise
 
     app = QApplication([])
 

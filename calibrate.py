@@ -35,16 +35,37 @@ def calibrate(i2c_bus_num: int) -> dict[str, Any]:
     def gyro_measurement(x: float, y: float, z: float) -> None:
         write_stdout(f"\r[Gyro] X: {x: 8.5f} Y: {y: 8.5f} Z: {z: 8.5f}")
 
+    def acc_measurement(x: float, y: float, z: float) -> None:
+        write_stdout(f"\r[Acc]  X: {x: 8.5f} Y: {y: 8.5f} Z: {z: 8.5f}")
+
     def mag_measurement(x: float, y: float, z: float) -> None:
         write_stdout(f"\r[Mag]  X: {x: 8.1f} Y: {y: 8.1f} Z: {z: 8.1f}")
 
     ## Gyroscope
 
     print("\nCalibrating gyroscope...")
-    input("Press enter to continue:")
+    input("Lie device flat and press enter to continue:")
+    print()
+    gyro_offsets = imu.run_gyro_calibration(on_measurement=gyro_measurement)
     print()
 
-    gyro_offsets = imu.run_gyro_calibration(on_measurement=gyro_measurement)
+    ## Accelerometer
+
+    print("\nCalibrating accelerometer...")
+
+    input("Lie device with z-axis up and press enter to continue:")
+    print()
+    imu.run_acc_calibration(on_measurement=acc_measurement)
+    print()
+
+    input("Lie device with y-axis up and press enter to continue:")
+    print()
+    imu.run_acc_calibration(on_measurement=acc_measurement)
+    print()
+
+    input("Lie device with x-axis up and press enter to continue:")
+    print()
+    imu.run_acc_calibration(on_measurement=acc_measurement)
     print()
 
     ## Magnometer

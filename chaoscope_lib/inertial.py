@@ -101,6 +101,28 @@ class IMU(I2CDevice):
         z = self._scale_raw_accel(raw_z)
         return x, y, z
 
+    def run_acc_calibration(
+        self,
+        secs: int = 10,
+        hz: int = 25,
+        on_measurement: Callable[[float, float, float], None] | None = None,
+    ) -> None:
+        """
+        Run calibration routine for `secs` at measurement frequency `hz`, calling
+        `on_measurement` if given. Returns nothing at present, used for visual
+        inspection of output only.
+        """
+        num_samples = secs * hz
+        sleep_time = 1.0 / hz
+
+        for _ in range(num_samples):
+            x, y, z = self.get_scaled_accel()
+
+            if on_measurement:
+                on_measurement(x, y, z)
+
+            sleep(sleep_time)
+
     def get_raw_gyro(self) -> tuple[int, int, int]:
         return self.get_measurement_vector(OUTX_L_G)
 
