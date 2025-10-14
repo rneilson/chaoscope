@@ -1,9 +1,10 @@
-from json import load
+import json
 import os
 import sys
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+from math import radians
 from pathlib import Path
 from time import sleep
 from typing import TYPE_CHECKING, Any, Callable
@@ -27,8 +28,16 @@ from PyQt5.QtWidgets import (
     QWidget,
     QLabel,
 )
+from ahrs import DEG2RAD, RAD2DEG
+from ahrs.common.quaternion import Quaternion
+from ahrs.filters.madgwick import Madgwick
+from ahrs.filters.tilt import Tilt
 from gpiozero import Button, DigitalInputDevice
+from numpy import array, ndarray
 from smbus2 import SMBus
+
+from chaoscope_lib.inertial import IMU, ONE_G
+from chaoscope_lib.magnometer import Magnometer
 
 if TYPE_CHECKING:
     from picamera2 import CompletedRequest, Picamera2  # type: ignore
@@ -59,6 +68,7 @@ ENABLE_RETICLE = False
 
 BASE_DIR = Path(__file__).parent
 PHOTO_DIR = BASE_DIR / "photos"
+CAL_FILE = BASE_DIR / "calibration.json"
 
 if run_dir := os.environ.get("XDG_RUNTIME_DIR"):
     SHUTDOWN_FILE = Path(run_dir) / "chaoscope-shutdown"
@@ -286,6 +296,171 @@ class PowerMonitor(QWidget):
         self.power_reading.connect(self.voltage_label.on_power_reading)
         self.power_reading.connect(self.current_label.on_power_reading)
         self.power_reading.connect(self.power_label.on_power_reading)
+
+
+@dataclass
+class HeadingState:
+    roll: float
+    pitch: float
+    yaw: float
+
+
+class HeadingReader(QObject):
+    READING_INTERVAL_MS = 40  # 25 Hz for now
+    FINAL_ROTATION = Quaternion(rpy=array([0.0, 0.0, 90.0]) * DEG2RAD)
+
+    heading = pyqtSignal(HeadingState)
+    finished = pyqtSignal()
+    _i2c: SMBus | None
+    _imu: IMU | None
+    _mag: Magnometer | None
+    _timer: QTimer | None
+    _gyro_offsets: tuple[float, float, float] | None
+    _mag_offsets: tuple[float, float, float] | None
+    _filter: Madgwick | None
+    _last_heading: Quaternion
+    _last_reading: datetime
+
+    def __init__(
+        self,
+        parent: QObject | None = None,
+        gyro_offsets: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        mag_offsets: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    ):
+        super().__init__(parent=parent)
+        self._timer = None
+        self._i2c = None
+        self._imu = None
+        self._mag = None
+        self._gyro_offsets = gyro_offsets
+        self._mag_offsets = mag_offsets
+        self._filter = None
+        self._last_heading = Quaternion()
+        self._last_reading = datetime.now(tz=CURRENT_TZ)
+
+    def start(self):
+        try:
+            assert self._gyro_offsets
+            assert self._mag_offsets
+            # Open I2C bus
+            self._i2c = SMBus(1)
+            # Setup IMU and magnometer
+            self._imu = IMU(self._i2c, self._gyro_offsets)
+            self._mag = Magnometer(self._i2c, self._mag_offsets)
+            # Setup AHRS filter
+            _, acc, mag = self.take_reading()
+            print(f"Initial acc: {acc}")
+            print(f"Initial mag: {mag}")
+            self._last_heading = Quaternion(Tilt().estimate(acc=acc, mag=mag))
+            self._last_reading = datetime.now(tz=CURRENT_TZ)
+            self._filter = Madgwick(
+                Dt=(self.READING_INTERVAL_MS / 1000),
+                q0=self._last_heading,
+            )
+            # Setup timer
+            self._timer = QTimer(self)
+            self._timer.timeout.connect(self.update_heading)
+            self._timer.start(self.READING_INTERVAL_MS)
+        except Exception as e:
+            print(f"Error starting heading reader: {e}", file=sys.stderr)
+            raise
+
+    def stop(self):
+        self._timer.stop()
+        self._timer = None
+        self.finished.emit()
+
+    def take_reading(self) -> tuple[ndarray, ndarray, ndarray]:
+        gyr = array([radians(v) for v in self._imu.get_scaled_gyro()])
+        acc = array([v * ONE_G for v in self._imu.get_scaled_accel()])
+        mag = array([v * 100_000 for v in self._mag.get_scaled_mag()])
+        return (gyr, acc, mag)
+
+    @pyqtSlot()
+    def update_heading(self):
+        gyr, acc, mag = self.take_reading()
+        new_reading = datetime.now(tz=CURRENT_TZ)
+        dt = (new_reading - self._last_reading).total_seconds()
+        self._last_reading = new_reading
+        self._last_heading = Quaternion(
+            self._filter.updateMARG(
+                q=self._last_heading, gyr=gyr, acc=acc, mag=mag, dt=dt
+            )
+        )
+        # Rotate new heading +90 deg around z-axis as per installation orientation
+        heading = Quaternion(self.FINAL_ROTATION * self._last_heading)
+        roll, pitch, yaw = (float(v) for v in (heading.to_angles() * RAD2DEG))
+        heading = HeadingState(roll=roll, pitch=pitch, yaw=yaw)
+        self.heading.emit(heading)
+
+
+class HeadingLabelKind(StrEnum):
+    ROLL = "roll"
+    PITCH = "pitch"
+    YAW = "yaw"
+
+
+class HeadingLabel(QLabel):
+    label_kind: HeadingLabelKind
+    heading_state: HeadingState
+
+    def __init__(
+        self,
+        kind: HeadingLabelKind,
+        parent: QWidget | None = None,
+        flags: Qt.WindowFlags | Qt.WindowType = Qt.WindowFlags(),
+    ):
+        super().__init__(parent=parent, flags=flags)
+        self.label_kind = kind
+        self.heading_state = HeadingState(0.0, 0.0, 0.0)
+        self.init_ui()
+
+    def init_ui(self):
+        self.setStyleSheet(TRANSPARENT_STYLESHEET)
+        self.setFont(FONT_MD)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.update_ui()
+
+    def update_ui(self):
+        match self.label_kind:
+            case HeadingLabelKind.ROLL:
+                r = int(round(self.heading_state.roll))
+                self.setText(f"ϕ {r}°")
+            case HeadingLabelKind.PITCH:
+                p = int(round(self.heading_state.pitch))
+                self.setText(f"θ {p}°")
+            case HeadingLabelKind.YAW:
+                y = int(round(self.heading_state.yaw))
+                self.setText(f"Ψ {y}°")
+
+    @pyqtSlot(HeadingState)
+    def on_heading_reading(self, heading_state: HeadingState):
+        self.heading_state = heading_state
+        self.update_ui()
+
+
+class HeadingIndicator(QWidget):
+    heading_reading = pyqtSignal(HeadingState)
+
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        flags: Qt.WindowFlags | Qt.WindowType = Qt.WindowFlags(),
+    ) -> None:
+        super().__init__(parent, flags)
+
+        self.roll_label = HeadingLabel(HeadingLabelKind.ROLL)
+        self.pitch_label = HeadingLabel(HeadingLabelKind.PITCH)
+        self.yaw_label = HeadingLabel(HeadingLabelKind.YAW)
+
+        self.heading_monitor_layout = QHBoxLayout(self)
+        self.heading_monitor_layout.addWidget(self.roll_label)
+        self.heading_monitor_layout.addWidget(self.pitch_label)
+        self.heading_monitor_layout.addWidget(self.yaw_label)
+
+        self.heading_reading.connect(self.roll_label.on_heading_reading)
+        self.heading_reading.connect(self.pitch_label.on_heading_reading)
+        self.heading_reading.connect(self.yaw_label.on_heading_reading)
 
 
 class ButtonObject(QObject):
@@ -797,6 +972,16 @@ def main() -> int:
     # Doing this here so it doesn't cause delays elsewhere
     PHOTO_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Load calibration file
+    gyro_offsets: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    mag_offsets: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    try:
+        cal_data = json.loads(CAL_FILE.read_text())
+        gyro_offsets = tuple(cal_data["gyroscope"])
+        mag_offsets = tuple(cal_data["magnometer"])
+    except FileNotFoundError:
+        print(f"Calibration file {CAL_FILE.absolute()} not found")
+
     app = QApplication([])
 
     ## Main window
@@ -834,6 +1019,21 @@ def main() -> int:
     power_thread.started.connect(power_reader.start)
     overlay_window.finish.connect(power_reader.stop)
     power_reader.finished.connect(thread_finisher(power_thread))
+
+    ## Heading indicator
+    heading_indicator = HeadingIndicator(overlay_window)
+    heading_indicator.setGeometry(
+        5, 480 - 5 - 40 - power_monitor.height(), 640 - 5 - 5, 40
+    )
+
+    heading_reader = HeadingReader(gyro_offsets=gyro_offsets, mag_offsets=mag_offsets)
+    heading_reader.heading.connect(heading_indicator.heading_reading)
+
+    heading_thread = QThread()
+    heading_reader.moveToThread(heading_thread)
+    heading_thread.started.connect(heading_reader.start)
+    overlay_window.finish.connect(heading_reader.stop)
+    heading_reader.finished.connect(thread_finisher(heading_thread))
 
     ## Lidar rangefinder
     range_button = ButtonObject(23, parent=overlay_window)
@@ -939,6 +1139,7 @@ def main() -> int:
     overlay_window.bring_to_front()
 
     power_thread.start()
+    heading_thread.start()
     range_thread.start()
 
     print(f"{datetime.now().isoformat()} Threads started, starting window")

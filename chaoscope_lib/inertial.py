@@ -17,6 +17,7 @@ OUTX_L_G = 0x22
 OUTX_L_A = 0x28
 
 MILLI_G = 0.00980665  # m/s^2
+ONE_G = 9.80665
 
 
 class IMU(I2CDevice):
