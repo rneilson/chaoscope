@@ -8,12 +8,6 @@ from pathlib import Path
 from time import sleep
 from typing import TYPE_CHECKING, Any, Callable
 
-if TYPE_CHECKING:
-    from picamera2 import CompletedRequest, Picamera2  # type: ignore
-    from picamera2.encoders import H264Encoder  # type: ignore
-    from picamera2.outputs import PyavOutput  # type: ignore
-    from picamera2.previews.qt import QGlPicamera2  # type: ignore
-
 from PyQt5.QtCore import (
     Qt,
     QPoint,
@@ -35,6 +29,12 @@ from PyQt5.QtWidgets import (
 )
 from gpiozero import Button, DigitalInputDevice
 from smbus2 import SMBus
+
+if TYPE_CHECKING:
+    from picamera2 import CompletedRequest, Picamera2  # type: ignore
+    from picamera2.encoders import H264Encoder  # type: ignore
+    from picamera2.outputs import PyavOutput  # type: ignore
+    from picamera2.previews.qt import QGlPicamera2  # type: ignore
 
 TRANSLUCENT_STYLESHEET = (
     "color: white; background-color: rgba(255, 255, 255, 63); border: 1px solid white; "
