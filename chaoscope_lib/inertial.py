@@ -104,7 +104,7 @@ class IMU(I2CDevice):
     def run_acc_calibration(
         self,
         secs: int = 10,
-        hz: int = 25,
+        hz: int = 40,
         on_measurement: Callable[[float, float, float], None] | None = None,
     ) -> None:
         """
@@ -150,7 +150,7 @@ class IMU(I2CDevice):
     def run_gyro_calibration(
         self,
         secs: int = 10,
-        hz: int = 25,
+        hz: int = 40,
         on_measurement: Callable[[float, float, float], None] | None = None,
     ) -> tuple[float, float, float]:
         """

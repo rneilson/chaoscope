@@ -306,7 +306,7 @@ class HeadingState:
 
 
 class HeadingReader(QObject):
-    READING_INTERVAL_MS = 40  # 25 Hz for now
+    READING_INTERVAL_MS = 20  # 25 Hz for now
     FINAL_ROTATION = Quaternion(rpy=array([0.0, 0.0, 90.0]) * DEG2RAD)
 
     heading = pyqtSignal(HeadingState)
@@ -348,14 +348,16 @@ class HeadingReader(QObject):
             self._imu = IMU(self._i2c, self._gyro_offsets)
             self._mag = Magnometer(self._i2c, self._mag_offsets)
             # Setup AHRS filter
-            _, acc, mag = self.take_reading()
-            print(f"Initial acc: {acc}")
-            print(f"Initial mag: {mag}")
-            self._last_heading = Quaternion(Tilt().estimate(acc=acc, mag=mag))
+            gyr, acc, mag = self.take_reading()
             self._last_reading = datetime.now(tz=CURRENT_TZ)
             self._filter = Madgwick(
                 Dt=(self.READING_INTERVAL_MS / 1000),
-                q0=self._last_heading,
+            )
+            self._last_heading = self._filter.updateMARG(
+                q=self._last_heading,
+                gyr=gyr,
+                acc=acc,
+                mag=mag,
             )
             # Setup timer
             self._timer = QTimer(self)
@@ -371,10 +373,12 @@ class HeadingReader(QObject):
         self.finished.emit()
 
     def take_reading(self) -> tuple[ndarray, ndarray, ndarray]:
-        gyr = array([radians(v) for v in self._imu.get_scaled_gyro()])
-        acc = array([v * ONE_G for v in self._imu.get_scaled_accel()])
-        mag = array([v * 100_000 for v in self._mag.get_scaled_mag()])
-        return (gyr, acc, mag)
+        gyr = array([radians(v) for v in self._imu.get_scaled_gyro()])  # rad/s
+        acc = array([v * ONE_G for v in self._imu.get_scaled_accel()])  # m/s^2
+        mag = array([v * 100 for v in self._mag.get_scaled_mag()])  # uT
+        # For whatever reason, negating the accelerometer reading properly aligns
+        # the resulting roll/pitch
+        return (gyr, acc * -1, mag)
 
     @pyqtSlot()
     def update_heading(self):
@@ -387,8 +391,8 @@ class HeadingReader(QObject):
                 q=self._last_heading, gyr=gyr, acc=acc, mag=mag, dt=dt
             )
         )
-        # Rotate new heading +90 deg around z-axis as per installation orientation
-        heading = Quaternion(self.FINAL_ROTATION * self._last_heading)
+        # # Rotate new heading +90 deg around z-axis as per installation orientation
+        heading = Quaternion(self._last_heading * self.FINAL_ROTATION)
         roll, pitch, yaw = (float(v) for v in (heading.to_angles() * RAD2DEG))
         heading = HeadingState(roll=roll, pitch=pitch, yaw=yaw)
         self.heading.emit(heading)
@@ -586,7 +590,7 @@ class CameraCapturer(QWidget):
             time_str = self._get_recording_time()
             # TODO: parameterize encoding/format if we ever vary them
             self.metadata_label.setText(
-                f"Duration: {time_str}\n" f"Encoding: H264\n" f"Format: MP4\n"
+                f"Duration: {time_str}\nEncoding: H264\nFormat: MP4\n"
             )
         elif self.img_metadata:
             self.metadata_label.setText(

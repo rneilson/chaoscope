@@ -1,7 +1,7 @@
 import json
 import sys
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from smbus2 import SMBus
 
@@ -9,6 +9,7 @@ from chaoscope_lib.inertial import IMU
 from chaoscope_lib.magnometer import Magnometer
 
 BASE_DIR = Path(__file__).parent.resolve()
+CAL_FILE = BASE_DIR / "calibration.json"
 
 
 def write_stdout(text: str) -> None:
@@ -47,37 +48,37 @@ def calibrate(i2c_bus_num: int) -> dict[str, Any]:
     input("Lie device flat and press enter to continue:")
     print()
     gyro_offsets = imu.run_gyro_calibration(on_measurement=gyro_measurement)
-    print()
+    print("\n")
 
     ## Accelerometer
 
-    print("\nCalibrating accelerometer...")
+    print("Calibrating accelerometer...")
 
     input("Lie device with z-axis up and press enter to continue:")
     print()
     imu.run_acc_calibration(on_measurement=acc_measurement)
-    print()
+    print("\n")
 
-    input("Lie device with y-axis up and press enter to continue:")
-    print()
-    imu.run_acc_calibration(on_measurement=acc_measurement)
-    print()
+    # input("Lie device with y-axis up and press enter to continue:")
+    # print()
+    # imu.run_acc_calibration(on_measurement=acc_measurement)
+    # print("\n")
 
-    input("Lie device with x-axis up and press enter to continue:")
-    print()
-    imu.run_acc_calibration(on_measurement=acc_measurement)
-    print()
+    # input("Lie device with x-axis up and press enter to continue:")
+    # print()
+    # imu.run_acc_calibration(on_measurement=acc_measurement)
+    # print("\n")
 
     ## Magnometer
 
-    print("\nCalibrating magnometer...")
+    print("Calibrating magnometer...")
     input("Press enter to continue:")
     print()
 
     mag_offsets = mag.run_mag_calibration(on_measurement=mag_measurement)
-    print()
+    print("\n")
 
-    print("\nFinal calibrations:")
+    print("Final calibrations:")
     gx, gy, gz = gyro_offsets
     mx, my, mz = mag_offsets
     print(f"[Gyro] X: {gx: 8.5f} Y: {gy: 8.5f} Z: {gz: 8.5f}")
@@ -93,6 +94,6 @@ if __name__ == "__main__":
     hide_cursor()
     try:
         cal_data = calibrate(1)
-        (BASE_DIR / "calibration.json").write_text(json.dumps(cal_data))
+        CAL_FILE.write_text(json.dumps(cal_data))
     finally:
         show_cursor()

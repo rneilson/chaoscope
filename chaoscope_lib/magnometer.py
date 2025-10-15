@@ -22,7 +22,7 @@ class Magnometer(I2CDevice):
 
     # At some point these could be made adjustable
     data_rate = 155  # Hz
-    mag_scale = 4  # gauss
+    mag_scale = 4.0  # gauss
     mag_sens = 6842  # LSB/gauss
 
     def __init__(
@@ -89,15 +89,15 @@ class Magnometer(I2CDevice):
         Get magnetometer measurement vector, scaled to current range in gauss.
         """
         raw_x, raw_y, raw_z = self.get_raw_mag()
-        x = self._scale_raw_mag(raw_x) - self._mag_offset_x
-        y = self._scale_raw_mag(raw_y) - self._mag_offset_y
-        z = self._scale_raw_mag(raw_z) - self._mag_offset_z
+        x = self._scale_raw_mag(raw_x - self._mag_offset_x)
+        y = self._scale_raw_mag(raw_y - self._mag_offset_y)
+        z = self._scale_raw_mag(raw_z - self._mag_offset_z)
         return x, y, z
 
     def run_mag_calibration(
         self,
         secs: int = 10,
-        hz: int = 25,
+        hz: int = 40,
         on_measurement: Callable[[float, float, float], None] | None = None,
     ) -> tuple[float, float, float]:
         """
@@ -105,6 +105,10 @@ class Magnometer(I2CDevice):
         `on_measurement` if given, and return a vector of hard-iron offsets in
         LSB/gauss.
         """
+        self._mag_offset_x = 0.0
+        self._mag_offset_y = 0.0
+        self._mag_offset_z = 0.0
+
         init_x, init_y, init_z = self.get_raw_mag()
         min_x = max_x = init_x
         min_y = max_y = init_y
