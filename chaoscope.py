@@ -30,14 +30,14 @@ from PyQt5.QtWidgets import (
 )
 from ahrs import DEG2RAD, RAD2DEG
 from ahrs.common.quaternion import Quaternion
-from ahrs.filters.madgwick import Madgwick
 from ahrs.filters.tilt import Tilt
+from ahrs.filters.madgwick import Madgwick
 from gpiozero import Button, DigitalInputDevice
 from numpy import array, ndarray
 from smbus2 import SMBus
 
 from chaoscope_lib.inertial import IMU, ONE_G
-from chaoscope_lib.magnometer import Magnometer
+from chaoscope_lib.magnometer import Magnometer, MagnometerCalibration
 
 if TYPE_CHECKING:
     from picamera2 import CompletedRequest, Picamera2  # type: ignore
@@ -316,7 +316,7 @@ class HeadingReader(QObject):
     _mag: Magnometer | None
     _timer: QTimer | None
     _gyro_offsets: tuple[float, float, float] | None
-    _mag_offsets: tuple[float, float, float] | None
+    _mag_calibration: MagnometerCalibration | None
     _filter: Madgwick | None
     _last_heading: Quaternion
     _last_reading: datetime
@@ -325,7 +325,7 @@ class HeadingReader(QObject):
         self,
         parent: QObject | None = None,
         gyro_offsets: tuple[float, float, float] = (0.0, 0.0, 0.0),
-        mag_offsets: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        mag_calibration: MagnometerCalibration | None = None,
     ):
         super().__init__(parent=parent)
         self._timer = None
@@ -333,7 +333,7 @@ class HeadingReader(QObject):
         self._imu = None
         self._mag = None
         self._gyro_offsets = gyro_offsets
-        self._mag_offsets = mag_offsets
+        self._mag_calibration = mag_calibration
         self._filter = None
         self._last_heading = Quaternion()
         self._last_reading = datetime.now(tz=CURRENT_TZ)
@@ -341,23 +341,28 @@ class HeadingReader(QObject):
     def start(self):
         try:
             assert self._gyro_offsets
-            assert self._mag_offsets
+            assert self._mag_calibration
             # Open I2C bus
             self._i2c = SMBus(1)
             # Setup IMU and magnometer
             self._imu = IMU(self._i2c, self._gyro_offsets)
-            self._mag = Magnometer(self._i2c, self._mag_offsets)
+            if self._mag_calibration:
+                self._mag = Magnometer(
+                    self._i2c,
+                    hard_offsets=self._mag_calibration.hard_offsets,
+                    soft_offsets=self._mag_calibration.soft_offsets,
+                    mag_field=self._mag_calibration.mag_field,
+                )
+            else:
+                self._mag = Magnometer(self._i2c)
             # Setup AHRS filter
-            gyr, acc, mag = self.take_reading()
+            _gyr, acc, mag = self.take_reading()
             self._last_reading = datetime.now(tz=CURRENT_TZ)
+            self._last_heading = Quaternion(
+                Tilt().estimate(acc=acc, mag=mag, representation="quaternion")
+            ).normalize()
             self._filter = Madgwick(
-                Dt=(self.READING_INTERVAL_MS / 1000),
-            )
-            self._last_heading = self._filter.updateMARG(
-                q=self._last_heading,
-                gyr=gyr,
-                acc=acc,
-                mag=mag,
+                q0=self._last_heading, Dt=(self.READING_INTERVAL_MS / 1000)
             )
             # Setup timer
             self._timer = QTimer(self)
@@ -375,7 +380,7 @@ class HeadingReader(QObject):
     def take_reading(self) -> tuple[ndarray, ndarray, ndarray]:
         gyr = array([radians(v) for v in self._imu.get_scaled_gyro()])  # rad/s
         acc = array([v * ONE_G for v in self._imu.get_scaled_accel()])  # m/s^2
-        mag = array([v * 100 for v in self._mag.get_scaled_mag()])  # uT
+        mag = array(self._mag.get_scaled_mag())  # uT
         # For whatever reason, negating the accelerometer reading properly aligns
         # the resulting roll/pitch
         return (gyr, acc * -1, mag)
@@ -968,6 +973,11 @@ def write_shutdown_file(exit_code: int) -> None:
 
 
 def main() -> int:
+    # TODO: make into a cli arg
+    run_camera = True
+    if (os.environ.get("NO_CAMERA") or "").lower() in ("1", "t", "true"):
+        run_camera = False
+
     # Remove shutdown file from previous run, if required
     clear_shutdown_file()
 
@@ -980,7 +990,7 @@ def main() -> int:
     try:
         cal_data = json.loads(CAL_FILE.read_text())
         gyro_offsets: tuple[float, float, float] = tuple(cal_data["gyroscope"])
-        mag_offsets: tuple[float, float, float] = tuple(cal_data["magnometer"])
+        mag_calibration = MagnometerCalibration.fromdict(cal_data["magnometer"])
     except FileNotFoundError:
         print(f"Calibration file {CAL_FILE.absolute()} not found", file=sys.stderr)
         raise
@@ -1029,7 +1039,9 @@ def main() -> int:
         5, 480 - 5 - 40 - power_monitor.height(), 640 - 5 - 5, 40
     )
 
-    heading_reader = HeadingReader(gyro_offsets=gyro_offsets, mag_offsets=mag_offsets)
+    heading_reader = HeadingReader(
+        gyro_offsets=gyro_offsets, mag_calibration=mag_calibration
+    )
     heading_reader.heading.connect(heading_indicator.heading_reading)
 
     heading_thread = QThread()
@@ -1077,7 +1089,7 @@ def main() -> int:
     def start_and_setup_camera():
         print(f"{datetime.now().isoformat()} Imports started")
 
-        from picamera2 import CompletedRequest, Picamera2, libcamera  # type: ignore
+        from picamera2 import Picamera2, libcamera  # type: ignore
         from picamera2.encoders import H264Encoder  # type: ignore
         from picamera2.outputs import PyavOutput  # type: ignore
         from picamera2.previews.qt import QGlPicamera2  # type: ignore
@@ -1147,7 +1159,8 @@ def main() -> int:
 
     print(f"{datetime.now().isoformat()} Threads started, starting window")
 
-    QTimer.singleShot(100, start_and_setup_camera)
+    if run_camera:
+        QTimer.singleShot(100, start_and_setup_camera)
 
     exit_code = 0
     try:

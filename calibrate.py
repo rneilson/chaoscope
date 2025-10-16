@@ -10,6 +10,8 @@ from chaoscope_lib.magnometer import Magnometer
 
 BASE_DIR = Path(__file__).parent.resolve()
 CAL_FILE = BASE_DIR / "calibration.json"
+RAW_MAG_FILE = BASE_DIR / "raw_mag.txt"
+CAL_MAG_FILE = BASE_DIR / "cal_mag.txt"
 
 
 def write_stdout(text: str) -> None:
@@ -75,18 +77,26 @@ def calibrate(i2c_bus_num: int) -> dict[str, Any]:
     input("Press enter to continue:")
     print()
 
-    mag_offsets = mag.run_mag_calibration(on_measurement=mag_measurement)
+    mag_offsets = mag.run_mag_calibration(
+        on_measurement=mag_measurement,
+        raw_measurement_file=RAW_MAG_FILE,
+        calibrated_measurement_file=CAL_MAG_FILE,
+    )
     print("\n")
 
     print("Final calibrations:")
     gx, gy, gz = gyro_offsets
-    mx, my, mz = mag_offsets
+    mx, my, mz = mag_offsets.hard_offsets
+    s0, s1, s2 = mag_offsets.soft_offsets
     print(f"[Gyro] X: {gx: 8.5f} Y: {gy: 8.5f} Z: {gz: 8.5f}")
-    print(f"[Mag]  X: {mx: 8.1f} Y: {my: 8.1f} Z: {mz: 8.1f}")
+    print(f"[Mag]  X: {mx: 8.5f} Y: {my: 8.5f} Z: {mz: 8.5f}")
+    print(f"[Mag] [ [ {s0[0]: 8.5f}, {s0[1]: 8.5f}, {s0[2]: 8.5f} ],  ")
+    print(f"[Mag]   [ {s1[0]: 8.5f}, {s1[1]: 8.5f}, {s1[2]: 8.5f} ],  ")
+    print(f"[Mag]   [ {s2[0]: 8.5f}, {s2[1]: 8.5f}, {s2[2]: 8.5f} ], ]")
 
     return {
         "gyroscope": list(gyro_offsets),
-        "magnometer": list(mag_offsets),
+        "magnometer": mag_offsets.asdict(),
     }
 
 

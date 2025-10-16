@@ -4,15 +4,15 @@ from pathlib import Path
 from time import sleep
 
 from ahrs import DEG2RAD, RAD2DEG
-from ahrs.common.orientation import ecompass
-from ahrs.common.quaternion import Quaternion
 
-# from ahrs.filters.tilt import Tilt
+# from ahrs.common.orientation import ecompass
+from ahrs.common.quaternion import Quaternion
+from ahrs.filters.tilt import Tilt
 from numpy import array
 from smbus2 import SMBus
 
 from chaoscope_lib.inertial import IMU, ONE_G
-from chaoscope_lib.magnometer import Magnometer
+from chaoscope_lib.magnometer import Magnometer, MagnometerCalibration
 
 BASE_DIR = Path(__file__).parent.resolve()
 CAL_FILE = BASE_DIR / "calibration.json"
@@ -33,14 +33,19 @@ def show_cursor() -> None:
 
 def test_accel(
     i2c_bus_num: int,
-    mag_offsets: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    mag_calibration: MagnometerCalibration,
 ) -> None:
     i2c = SMBus(i2c_bus_num)
     imu_obj = IMU(i2c)
-    mag_obj = Magnometer(i2c, mag_offsets=mag_offsets)
+    mag_obj = Magnometer(
+        i2c,
+        hard_offsets=mag_calibration.hard_offsets,
+        soft_offsets=mag_calibration.soft_offsets,
+        mag_field=mag_calibration.mag_field,
+    )
 
     print("Testing accelerometer...")
-    input("Press enter when ready:")
+    # input("Press enter when ready:")
     print()
 
     # For rotating to NED frame
@@ -51,10 +56,10 @@ def test_accel(
         mag_out = mag_obj.get_scaled_mag()
 
         acc = array([v * ONE_G for v in acc_out])  # m/s^2
-        mag = array([v * 100 for v in mag_out])  # uT
+        mag = array(mag_out)  # uT
 
         heading = Quaternion(
-            ecompass(a=acc * -1, m=mag, frame="NED", representation="quaternion")
+            Tilt().estimate(acc=acc * -1, mag=mag, representation="quaternion")
         )
         heading_rot = Quaternion(heading * qr)
         ax, ay, az = acc_out
@@ -63,7 +68,7 @@ def test_accel(
 
         write_stdout(
             f"\rax: {ax: 6.3f} ay: {ay: 6.3f} az: {az: 6.3f} "
-            f"mx: {mx: 6.3f} my: {my: 6.3f} mz: {mz: 6.3f} "
+            f"mx: {mx: 6.1f} my: {my: 6.1f} mz: {mz: 6.1f} "
             f"R: {roll: 4.0f}° P: {pitch: 4.0f}° Y: {yaw: 4.0f}°"
         )
 
@@ -74,7 +79,7 @@ if __name__ == "__main__":
     hide_cursor()
     try:
         cal_data = json.loads(CAL_FILE.read_text())
-        test_accel(1, tuple(cal_data["magnometer"]))
+        test_accel(1, MagnometerCalibration.fromdict(cal_data["magnometer"]))
     except KeyboardInterrupt:
         print("\nExiting...")
     finally:
