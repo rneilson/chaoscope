@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -9,6 +10,7 @@ from pathlib import Path
 from time import sleep
 from typing import TYPE_CHECKING, Any, Callable
 
+import numpy as np
 from PyQt5.QtCore import (
     Qt,
     QPoint,
@@ -306,7 +308,7 @@ class HeadingState:
 
 
 class HeadingReader(QObject):
-    READING_INTERVAL_MS = 20  # 25 Hz for now
+    READING_INTERVAL_MS = 40  # 25 Hz for now
     FINAL_ROTATION = Quaternion(rpy=array([0.0, 0.0, 90.0]) * DEG2RAD)
 
     heading = pyqtSignal(HeadingState)
@@ -318,6 +320,7 @@ class HeadingReader(QObject):
     _gyro_offsets: tuple[float, float, float] | None
     _mag_calibration: MagnometerCalibration | None
     _filter: Madgwick | None
+    _headings: deque[Quaternion]
     _last_heading: Quaternion
     _last_reading: datetime
 
@@ -335,6 +338,7 @@ class HeadingReader(QObject):
         self._gyro_offsets = gyro_offsets
         self._mag_calibration = mag_calibration
         self._filter = None
+        self._headings = deque(maxlen=int(500 / self.READING_INTERVAL_MS))
         self._last_heading = Quaternion()
         self._last_reading = datetime.now(tz=CURRENT_TZ)
 
@@ -358,12 +362,8 @@ class HeadingReader(QObject):
             # Setup AHRS filter
             _gyr, acc, mag = self.take_reading()
             self._last_reading = datetime.now(tz=CURRENT_TZ)
-            self._last_heading = Quaternion(
-                Tilt().estimate(acc=acc, mag=mag, representation="quaternion")
-            ).normalize()
-            self._filter = Madgwick(
-                q0=self._last_heading, Dt=(self.READING_INTERVAL_MS / 1000)
-            )
+            self._last_heading = self.get_heading(acc=acc, mag=mag)
+            self._headings.append(self._last_heading)
             # Setup timer
             self._timer = QTimer(self)
             self._timer.timeout.connect(self.update_heading)
@@ -381,24 +381,44 @@ class HeadingReader(QObject):
         gyr = array([radians(v) for v in self._imu.get_scaled_gyro()])  # rad/s
         acc = array([v * ONE_G for v in self._imu.get_scaled_accel()])  # m/s^2
         mag = array(self._mag.get_scaled_mag())  # uT
+        return (gyr, acc, mag)
+
+    def get_heading(self, acc: ndarray, mag: ndarray) -> Quaternion:
         # For whatever reason, negating the accelerometer reading properly aligns
         # the resulting roll/pitch
-        return (gyr, acc * -1, mag)
+        heading = Quaternion(
+            Tilt().estimate(acc=acc * -1, mag=mag, representation="quaternion")
+        )
+        # Rotate new heading +90 deg around z-axis as per installation orientation
+        heading_rot = Quaternion(heading * self.FINAL_ROTATION)
+
+        return heading_rot
+
+    def avg_headings(self) -> Quaternion:
+        accum = np.array([0.0, 0.0, 0.0, 0.0])
+        # TODO: setup weights to favor most recent
+
+        for q in self._headings:
+            if np.dot(accum, q) < 0.0:
+                accum -= q
+            else:
+                accum += q
+
+        return Quaternion(accum)
 
     @pyqtSlot()
     def update_heading(self):
-        gyr, acc, mag = self.take_reading()
+        _gyr, acc, mag = self.take_reading()
         new_reading = datetime.now(tz=CURRENT_TZ)
-        dt = (new_reading - self._last_reading).total_seconds()
+        # TODO: we should weight by dt maybe?
+        _dt = (new_reading - self._last_reading).total_seconds()
         self._last_reading = new_reading
-        self._last_heading = Quaternion(
-            self._filter.updateMARG(
-                q=self._last_heading, gyr=gyr, acc=acc, mag=mag, dt=dt
-            )
-        )
-        # # Rotate new heading +90 deg around z-axis as per installation orientation
-        heading = Quaternion(self._last_heading * self.FINAL_ROTATION)
-        roll, pitch, yaw = (float(v) for v in (heading.to_angles() * RAD2DEG))
+
+        self._last_heading = self.get_heading(acc=acc, mag=mag)
+        self._headings.append(self._last_heading)
+        cur_heading = self.avg_headings()
+
+        roll, pitch, yaw = (float(v) for v in (cur_heading.to_angles() * RAD2DEG))
         heading = HeadingState(roll=roll, pitch=pitch, yaw=yaw)
         self.heading.emit(heading)
 
