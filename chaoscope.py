@@ -5,7 +5,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from math import radians
+from math import cos, radians, sin
 from pathlib import Path
 from time import sleep
 from typing import TYPE_CHECKING, Any, Callable
@@ -66,7 +66,7 @@ LIDAR_REG_SAVE = 0x20
 LIDAR_REG_REBOOT = 0x21
 LIDAR_REG_TRIGGER = 0x24
 
-ENABLE_RETICLE = False
+ENABLE_RETICLE = True
 
 BASE_DIR = Path(__file__).parent
 PHOTO_DIR = BASE_DIR / "photos"
@@ -463,13 +463,13 @@ class HeadingLabel(QLabel):
                 self.setText(f"Ψ {y}°")
 
     @pyqtSlot(HeadingState)
-    def on_heading_reading(self, heading_state: HeadingState):
+    def on_heading_update(self, heading_state: HeadingState):
         self.heading_state = heading_state
         self.update_ui()
 
 
 class HeadingIndicator(QWidget):
-    heading_reading = pyqtSignal(HeadingState)
+    on_heading_update = pyqtSignal(HeadingState)
 
     def __init__(
         self,
@@ -487,9 +487,9 @@ class HeadingIndicator(QWidget):
         self.heading_monitor_layout.addWidget(self.pitch_label)
         self.heading_monitor_layout.addWidget(self.yaw_label)
 
-        self.heading_reading.connect(self.roll_label.on_heading_reading)
-        self.heading_reading.connect(self.pitch_label.on_heading_reading)
-        self.heading_reading.connect(self.yaw_label.on_heading_reading)
+        self.on_heading_update.connect(self.roll_label.on_heading_update)
+        self.on_heading_update.connect(self.pitch_label.on_heading_update)
+        self.on_heading_update.connect(self.yaw_label.on_heading_update)
 
 
 class ButtonObject(QObject):
@@ -886,6 +886,7 @@ class Reticle(QWidget):
     LABEL_HEIGHT = 40
     LABEL_MIN_WIDTH = 100
     RETICLE_LINE_WIDTH = 3
+    RETICLE_LINE_LENGTH = 80
 
     def __init__(
         self,
@@ -900,23 +901,30 @@ class Reticle(QWidget):
         self.center_x = center_x
         self.center_y = center_y
         self.radius = radius
+        self.roll = 0.0
         self.enable_reticle = enable_reticle
         self.outer_radius = radius + self.RETICLE_LINE_WIDTH
+        self.half_height = (
+            max(self.LABEL_HEIGHT, self.RETICLE_LINE_LENGTH) + self.outer_radius
+        )
         self.text_width = max(self.outer_radius * 2, self.LABEL_MIN_WIDTH)
         self.text = ""
         self.init_ui()
 
     def init_ui(self):
-        self.setStyleSheet(TRANSPARENT_STYLESHEET)
+        # self.setStyleSheet(TRANSPARENT_STYLESHEET)
+        self.setStyleSheet(TRANSLUCENT_STYLESHEET)
 
+        width = max(self.text_width, (self.outer_radius + self.RETICLE_LINE_LENGTH) * 2)
         self.setGeometry(
-            self.center_x - (self.text_width // 2),
-            self.center_y - (self.LABEL_HEIGHT + self.outer_radius),
-            self.text_width,
-            (self.outer_radius * 2) + self.LABEL_HEIGHT,
+            self.center_x - (width // 2),
+            self.center_y - self.half_height,
+            width,
+            self.half_height + self.outer_radius + self.RETICLE_LINE_LENGTH,
         )
 
     def on_range_reading(self, range: float):
+        old_text = self.text
         if range == 0.0:
             # Zero value indicates no reading, clear text
             self.text = ""
@@ -925,7 +933,15 @@ class Reticle(QWidget):
             self.text = "---"
         else:
             self.text = f"{range:.2f}m"
-        self.update()
+        if old_text != self.text:
+            self.update()
+
+    @pyqtSlot(HeadingState)
+    def on_heading_update(self, heading: HeadingState):
+        old_roll = self.roll
+        self.roll = heading.roll
+        if old_roll != self.roll:
+            self.update()
 
     def paintEvent(self, event: QPaintEvent):
         qp = QPainter()
@@ -936,11 +952,11 @@ class Reticle(QWidget):
         width = rect.width()
         top_left = rect.topLeft()
         center_x = top_left.x() + (width // 2)
-        center_y = top_left.y() + self.LABEL_HEIGHT + self.outer_radius
-        label_x = top_left.x()
-        label_y = top_left.y()
-        label_w = width
-        label_h = rect.height() - (self.outer_radius * 2)
+        center_y = top_left.y() + self.half_height
+        label_x = top_left.x() + ((width - self.text_width) // 2)
+        label_y = center_y - self.LABEL_HEIGHT - self.outer_radius
+        label_w = self.text_width
+        label_h = self.LABEL_HEIGHT
 
         if self.text:
             qp.setPen(QPen(Qt.GlobalColor.white))
@@ -951,14 +967,40 @@ class Reticle(QWidget):
                 self.text,
             )
 
-        if self.enable_reticle:
             qp.setPen(
                 QPen(
                     Qt.GlobalColor.white, self.RETICLE_LINE_WIDTH, Qt.PenStyle.SolidLine
                 )
             )
+
+        if self.enable_reticle:
+            # Reticle circle portion
             qp.drawEllipse(QPoint(center_x, center_y), self.radius, self.radius)
             # TODO: draw center point when ranging active
+
+            # Reticle roll lines
+            theta = radians(self.roll)
+            cos_theta = cos(theta)
+            sin_theta = sin(theta)
+            start_len = self.outer_radius + self.LABEL_HEIGHT
+            end_len = self.outer_radius + self.RETICLE_LINE_LENGTH
+            line_start_x = start_len * cos_theta
+            line_start_y = start_len * sin_theta
+            line_end_x = end_len * cos_theta
+            line_end_y = end_len * sin_theta
+
+            qp.drawLine(
+                int(round(float(center_x) + line_start_x)),
+                int(round(float(center_y) - line_start_y)),
+                int(round(float(center_x) + line_end_x)),
+                int(round(float(center_y) - line_end_y)),
+            )
+            qp.drawLine(
+                int(round(float(center_x) - line_start_x)),
+                int(round(float(center_y) + line_start_y)),
+                int(round(float(center_x) - line_end_x)),
+                int(round(float(center_y) + line_end_y)),
+            )
 
         qp.end()
 
@@ -1053,6 +1095,10 @@ def main() -> int:
     overlay_window.finish.connect(power_reader.stop)
     power_reader.finished.connect(thread_finisher(power_thread))
 
+    ## Center reticle
+    # TODO: get value of enable_reticle from cli arg or something
+    reticle = Reticle(320, 240, 20, parent=overlay_window)
+
     ## Heading indicator
     heading_indicator = HeadingIndicator(overlay_window)
     heading_indicator.setGeometry(
@@ -1062,7 +1108,8 @@ def main() -> int:
     heading_reader = HeadingReader(
         gyro_offsets=gyro_offsets, mag_calibration=mag_calibration
     )
-    heading_reader.heading.connect(heading_indicator.heading_reading)
+    heading_reader.heading.connect(heading_indicator.on_heading_update)
+    heading_reader.heading.connect(reticle.on_heading_update)
 
     heading_thread = QThread()
     heading_reader.moveToThread(heading_thread)
@@ -1072,9 +1119,6 @@ def main() -> int:
 
     ## Lidar rangefinder
     range_button = ButtonObject(23, parent=overlay_window)
-
-    # TODO: get value of enable_reticle from cli arg or something
-    reticle = Reticle(320, 275, 50, parent=overlay_window)
 
     range_reader = RangeReader()
     range_reader.reading.connect(reticle.on_range_reading)
