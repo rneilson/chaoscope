@@ -306,10 +306,21 @@ class HeadingState:
     pitch: float
     yaw: float
 
+    def apply_declination(self, dec: float) -> None:
+        """
+        Apply magnetic declination to observed yaw value.
+        """
+        self.yaw += dec
+        if self.yaw > 180.0:
+            self.yaw -= 360.0
+        elif self.yaw < -180.0:
+            self.yaw += 360.0
+
 
 class HeadingReader(QObject):
     READING_INTERVAL_MS = 40  # 25 Hz for now
     FINAL_ROTATION = Quaternion(rpy=array([0.0, 0.0, 90.0]) * DEG2RAD)
+    MAG_DECLINATION = -16.2  # degrees
 
     heading = pyqtSignal(HeadingState)
     finished = pyqtSignal()
@@ -420,6 +431,7 @@ class HeadingReader(QObject):
 
         roll, pitch, yaw = (float(v) for v in (cur_heading.to_angles() * RAD2DEG))
         heading = HeadingState(roll=roll, pitch=pitch, yaw=yaw)
+        heading.apply_declination(self.MAG_DECLINATION)
         self.heading.emit(heading)
 
 

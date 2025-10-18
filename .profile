@@ -13,6 +13,7 @@
 
 # Autostart chaoscope application
 if [[ ! ${DISPLAY} && ${XDG_VTNR} == 1 && -f "$HOME/chaoscope/autostart" ]]; then
+    # export NO_CAMERA=1
     exec "$HOME/chaoscope/chaoscope.sh"
 fi
 
